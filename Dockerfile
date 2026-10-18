@@ -12,10 +12,10 @@ RUN apt-get update \
       rclone \
  && rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --uid 10001 backup
+RUN useradd --create-home --uid 10001 dbbackup
 WORKDIR /app
 COPY scripts/ /app/scripts/
 RUN chmod 0755 /app/scripts/*.sh
 
-USER backup
+USER dbbackup
 ENTRYPOINT ["/app/scripts/backup.sh"]
