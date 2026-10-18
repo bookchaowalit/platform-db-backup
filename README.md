@@ -35,25 +35,40 @@ Object names: `<tier>/<target>/<YYYY-MM-DDTHHMM>.<dump|sql.gz>.age`.
 | `HEARTBEAT_URL` / `HEARTBEAT_TOKEN` | Monitor endpoint `…/heartbeat/db-backup` and its bearer token |
 | `BACKUP_TZ` | Optional, defaults to `Asia/Bangkok` |
 
-Railway databases in other projects are reached through their public TCP proxy URL
-(`DATABASE_PUBLIC_URL`), because reference variables don't cross projects. When a database
-password is rotated, update the matching `BACKUP_URL_*` here too. The next run fails loudly
-until you do.
+## Deployments
+
+| Railway service | Databases | Connection | Heartbeat job |
+|---|---|---|---|
+| `ops-backups/db-backup` | the 30 Neon databases of own services | dedicated `db_backup` role per Neon project (Neon roles inherit `pg_read_all_data` via `neon_superuser`) | `db-backup` |
+| `db-backup` inside each Railway project with a database (ev3, a2n, tma, scannpop, teeparinwat, enchanting-dream) | that project's Postgres / PostGIS / MySQL | reference variable such as `${{Postgres.DATABASE_URL}}` over the private network, so no database is exposed publicly | `db-backup-<project>` |
+
+When a Neon `db_backup` password is reset, update the matching `BACKUP_URL_*` in `ops-backups`.
+The next run fails loudly until you do. Railway references follow rotations automatically.
+
+Secrets live in Infisical: `/db-backup` (R2 key scoped to this bucket only, `AGE_RECIPIENT`,
+and `AGE_IDENTITY`, the decryption key) and `/monitoring` (`HEARTBEAT_TOKEN`).
 
 ## What a run checks
 
-- `pg_dump --format=custom`, then `pg_restore --list` on the file, so a truncated or corrupt
-  archive fails the target before it is encrypted.
+- `pg_dump --format=custom`, then `pg_restore --file=/dev/null`, which reads every data block, so
+  a truncated or corrupt archive fails the target before it is encrypted.
 - MySQL: `mysqldump --single-transaction`, then `gzip -t`.
 - One failed target never stops the others. The job exits non-zero and the heartbeat lists the
-  failed targets.
+  failed targets. An empty `BACKUP_TARGETS` is a configuration error, not a successful run.
+- Logs never contain raw client errors (libpq and mysql can echo parts of a connection string);
+  a failure is reported as a short category such as `permission denied` or `connection failed`.
 
 ## Restore
 
 ```bash
-AGE_IDENTITY_FILE=~/path/to/db-backup-age-key.txt BACKUP_BUCKET=db-backups \
+# AGE_IDENTITY from Infisical /db-backup, written to a 0600 temp file
+AGE_IDENTITY_FILE=/tmp/age-key.txt BACKUP_BUCKET=db-backups \
   scripts/restore.sh daily/habits/2026-10-18T0200.dump.age "$SCRATCH_DATABASE_URL"
 ```
+
+`restore.sh` renders the archive to SQL first (a damaged file fails before the target changes),
+then applies it in one transaction that stops on the first error. It works against PostgreSQL 16
+and newer.
 
 Always restore into a scratch database (for example a Neon branch) first and check it. Restoring
 over production needs a written restore decision. See `docs/runbook.md`.

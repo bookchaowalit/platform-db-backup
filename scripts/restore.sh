@@ -7,6 +7,9 @@
 # Environment: AGE_IDENTITY_FILE (path to the age private key), BACKUP_BUCKET, RCLONE_CONFIG_R2_*
 set -euo pipefail
 
+# shellcheck source=scripts/lib.sh
+. "$(dirname "$0")/lib.sh"
+
 if [ "$#" -ne 2 ]; then
   echo "usage: $0 <object-path> <target-database-url>" >&2
   exit 2
@@ -24,21 +27,21 @@ age --decrypt --identity "$AGE_IDENTITY_FILE" --output "$work/backup" "$work/bac
 
 case "$object" in
   *.dump.age)
-    pg_restore --list "$work/backup" >/dev/null
-    pg_restore --no-owner --no-privileges --clean --if-exists --dbname="$target_url" "$work/backup"
+    # Render the whole archive to SQL first: this reads every data block, so a damaged archive
+    # fails here, before anything in the target database changes. The PG18 client emits
+    # `SET transaction_timeout`, which servers older than 17 reject, so drop that one line and
+    # apply the script in a single transaction that stops on the first error.
+    pg_restore --no-owner --no-privileges --clean --if-exists --file="$work/restore.sql" "$work/backup"
+    sed -i '/^SET transaction_timeout = /d' "$work/restore.sql"
+    psql --dbname="$target_url" --no-psqlrc --set ON_ERROR_STOP=1 --single-transaction \
+      --quiet --file="$work/restore.sql"
     ;;
   *.sql.gz.age)
-    rest="${target_url#mysql://}"
-    creds="${rest%%@*}"
-    hostpart="${rest#*@}"
-    hostport="${hostpart%%/*}"
-    database="${hostpart#*/}"
-    database="${database%%\?*}"
-    host="${hostport%%:*}"
-    port="${hostport##*:}"
-    [ "$port" = "$hostport" ] && port=3306
+    gzip -t "$work/backup"
+    parse_mysql_url "$target_url" || { echo "invalid mysql:// URL" >&2; exit 2; }
     gunzip -c "$work/backup" \
-      | MYSQL_PWD="${creds#*:}" mysql --host="$host" --port="$port" --user="${creds%%:*}" "$database"
+      | MYSQL_PWD="$MYSQL_URL_PASSWORD" mysql --host="$MYSQL_URL_HOST" --port="$MYSQL_URL_PORT" \
+        --user="$MYSQL_URL_USER" "$MYSQL_URL_DATABASE"
     ;;
   *)
     echo "unknown backup type: $object" >&2

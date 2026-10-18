@@ -16,14 +16,22 @@
 #                             (default Asia/Bangkok)
 set -uo pipefail
 
+# shellcheck source=scripts/lib.sh
+. "$(dirname "$0")/lib.sh"
+
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 
-for var in BACKUP_TARGETS AGE_RECIPIENT BACKUP_BUCKET; do
+for var in AGE_RECIPIENT BACKUP_BUCKET; do
   if [ -z "${!var:-}" ]; then
     log "FATAL missing $var"
     exit 2
   fi
 done
+read -r -a targets <<<"${BACKUP_TARGETS:-}"
+if [ "${#targets[@]}" -eq 0 ]; then
+  log "FATAL BACKUP_TARGETS is empty"
+  exit 2
+fi
 
 export TZ="${BACKUP_TZ:-Asia/Bangkok}"
 stamp="$(date +%Y-%m-%dT%H%M)"
@@ -39,26 +47,20 @@ total_bytes=0
 dump_postgres() {
   local url="$1" out="$2"
   pg_dump --format=custom --compress=6 --no-owner --no-privileges --dbname="$url" --file="$out" \
-    && pg_restore --list "$out" >/dev/null
+    && pg_restore --file=/dev/null "$out"  # reads every data block, not just the table of contents
 }
 
 dump_mysql() {
   local url="$1" out="$2"
-  # mysql://user:password@host:port/database
-  local rest="${url#mysql://}"
-  local creds="${rest%%@*}" hostpart="${rest#*@}"
-  local user="${creds%%:*}" password="${creds#*:}"
-  local hostport="${hostpart%%/*}" database="${hostpart#*/}"
-  database="${database%%\?*}"
-  local host="${hostport%%:*}" port="${hostport##*:}"
-  [ "$port" = "$hostport" ] && port=3306
-  MYSQL_PWD="$password" mysqldump --host="$host" --port="$port" --user="$user" \
-    --single-transaction --routines --triggers --events --skip-lock-tables "$database" \
+  parse_mysql_url "$url" || return 64
+  MYSQL_PWD="$MYSQL_URL_PASSWORD" mysqldump --host="$MYSQL_URL_HOST" --port="$MYSQL_URL_PORT" \
+    --user="$MYSQL_URL_USER" --single-transaction --routines --triggers --events --skip-lock-tables \
+    "$MYSQL_URL_DATABASE" \
     | gzip -6 >"$out" \
     && gzip -t "$out"
 }
 
-for target in $BACKUP_TARGETS; do
+for target in "${targets[@]}"; do
   key="BACKUP_URL_$(printf '%s' "$target" | tr '[:lower:]-' '[:upper:]_')"
   url="${!key:-}"
   if [ -z "$url" ]; then
@@ -82,8 +84,11 @@ for target in $BACKUP_TARGETS; do
   name="$target/$stamp.$ext.age"
   log "START $target"
 
-  if ! "$dumper" "$url" "$raw" 2>"$work/$target.err"; then
-    log "FAIL $target: dump failed: $(tail -n 3 "$work/$target.err" | tr '\n' ' ')"
+  "$dumper" "$url" "$raw" 2>"$work/$target.err"
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    # Never log the raw client error: libpq and mysql can echo parts of the connection string.
+    log "FAIL $target: dump failed (exit $status, $(classify_dump_error "$work/$target.err"))"
     failed+=("$target")
     rm -f "$raw"
     continue
