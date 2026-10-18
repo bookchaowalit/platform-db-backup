@@ -72,3 +72,20 @@ and newer.
 
 Always restore into a scratch database (for example a Neon branch) first and check it. Restoring
 over production needs a written restore decision. See `docs/runbook.md`.
+
+## Known limits (accepted, fail-safe)
+
+These can only make a **restore drill report a failure for a good backup**; none can lose,
+corrupt or leak a backup, and none occurs in the current databases (all drills pass).
+
+- **MySQL trigger/routine text.** The manifest skips `DELIMITER ;;` … `DELIMITER ;` blocks. A
+  trigger whose string literal contains a line that is exactly `DELIMITER ;`, or a dump section
+  marker, could still be miscounted.
+- **MySQL `ALTER DATABASE` in routine output.** When a stored program's collation differs from
+  the database's, mysqldump emits `ALTER DATABASE <original name>`, which a scratch restore under
+  another name cannot run.
+- **Role names containing a newline** in row-level security policies are joined with a space by
+  the role parser, so the drill would create the wrong role.
+
+If a drill ever fails for one of these reasons, restore that target by hand on an isolated
+server under its original name (see `docs/runbook.md`).
