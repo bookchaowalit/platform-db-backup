@@ -170,6 +170,10 @@ mysql_manifest_from_dump() {
     # Routines and events come after all table data; nothing past this point is row data.
     /^-- Dumping (routines|events) for database/ { done = 1 }
     done                         { next }
+    # Trigger and routine bodies are written between DELIMITER ;; and DELIMITER ;
+    /^DELIMITER ;;/              { body = 1; next }
+    /^DELIMITER ;$/              { body = 0; next }
+    body                         { next }
     /^CREATE TABLE `/            { t = ident($0, 15); if (!(t in n)) n[t] = 0; next }
     /^LOCK TABLES `.*` WRITE;$/  { data = ident($0, 14); next }
     /^UNLOCK TABLES;$/           { data = ""; next }
@@ -210,7 +214,11 @@ pg_policy_roles() {
   pg_restore --list "$archive" | grep -E '^[0-9]+; [0-9]+ [0-9]+ POLICY ' >"$dir/policies.list" || return 0
   pg_restore --use-list="$dir/policies.list" --file="$dir/policies.sql" "$archive" || return 1
   awk '
-    function flush() { if (tok != "" || quoted) roles[tok] = 1; tok = ""; quoted = 0 }
+    function flush() {
+      if (quoted) { if (tok != "public") roles[tok] = 1 }  # "public" is a reserved role name
+      else if (tok != "" && tok != "public" && tok != "PUBLIC" && tok != "CURRENT_USER" && tok != "SESSION_USER" && tok != "CURRENT_ROLE") roles[tok] = 1
+      tok = ""; quoted = 0
+    }
     /^CREATE POLICY / { stmt = ""; inpol = 1 }
     inpol { stmt = stmt " " $0; if ($0 ~ /;[[:space:]]*$/) { parse(stmt); inpol = 0 } }
     function parse(st,    i, c, n, inq, depth, state, word) {
@@ -231,7 +239,7 @@ pg_policy_roles() {
         if (state == 1) {
           if (c == ",") { flush(); continue }
           if (c ~ /[[:space:];]/) {
-            if (tok == "USING" || tok == "WITH") { tok = ""; break }
+            if (!quoted && (tok == "USING" || tok == "WITH")) { tok = ""; break }
             if (tok != "" || quoted) flush()
             if (c == ";") break
             continue
@@ -244,7 +252,7 @@ pg_policy_roles() {
       }
       if (state == 1) flush()
     }
-    END { for (r in roles) if (r != "" && r != "public" && r != "PUBLIC" && r != "CURRENT_USER" && r != "SESSION_USER" && r != "CURRENT_ROLE") print r }
+    END { for (r in roles) if (r != "") print r }
   ' "$dir/policies.sql" | LC_ALL=C sort -u
 }
 
