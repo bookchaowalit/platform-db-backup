@@ -34,7 +34,8 @@ pg_url_with_database() {
   if [ "$base" != "$url" ]; then
     IFS='&' read -r -a params <<<"${url#*\?}"
     for param in "${params[@]}"; do
-      [[ "$param" == dbname=* ]] || kept+=("$param")
+      # libpq decodes keys before use, so %64bname is dbname too.
+      [[ "$(urldecode "${param%%=*}")" == dbname ]] || kept+=("$param")
     done
     [ "${#kept[@]}" -gt 0 ] && query="?$(IFS='&'; printf '%s' "${kept[*]}")"
   fi
@@ -82,47 +83,93 @@ pg_table_counts() {
     --set ON_ERROR_STOP=1 --command="$PG_COUNT_SQL"
 }
 
+# Stop a coprocess: ask it to finish, then kill it if it is still running after 10 s.
+stop_coproc() {
+  local pid="$1"
+  [ -n "$pid" ] || return 0
+  for _ in $(seq 1 10); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  kill "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  return 0
+}
+
 # pg_dump plus a row-count manifest taken from the very same snapshot: one REPEATABLE READ
 # transaction stays open, exports its snapshot to pg_dump and then counts every table, so rows
-# written meanwhile can never make the manifest disagree with the dump.
+# written meanwhile can never make the manifest disagree with the dump. Every coprocess write
+# and read is guarded (the callers ignore SIGPIPE), and the coprocess is always stopped.
 #   pg_dump_with_manifest <url> <dump-file> <manifest-file> <stderr-file>
 pg_dump_with_manifest() {
   local url="$1" out="$2" manifest="$3" err="$4" snapshot="" line="" status=0
+  local to_psql="" from_psql="" psql_pid=""
   coproc SNAP {
     psql --dbname="$url" --no-psqlrc --quiet --no-align --tuples-only --field-separator=$'\t' \
       --set ON_ERROR_STOP=1 2>>"$err"
   }
-  local to_psql="${SNAP[1]}" from_psql="${SNAP[0]}" psql_pid="$SNAP_PID"
-  printf '%s\n' "BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY;" "SELECT pg_export_snapshot();" 1>&"$to_psql"
-  if ! IFS= read -r -t 120 snapshot <&"$from_psql" || [[ ! "$snapshot" =~ ^[0-9A-Fa-f-]+$ ]]; then
+  # A client that fails immediately may already be gone, and bash then unsets SNAP.
+  to_psql="${SNAP[1]-}"
+  from_psql="${SNAP[0]-}"
+  psql_pid="${SNAP_PID-}"
+  if [ -z "$to_psql" ] || [ -z "$from_psql" ]; then
+    stop_coproc "$psql_pid"
+    return 1
+  fi
+  if ! printf '%s\n' "BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY;" "SELECT pg_export_snapshot();" 1>&"$to_psql" 2>/dev/null \
+    || ! IFS= read -r -t 120 snapshot <&"$from_psql" \
+    || [[ ! "$snapshot" =~ ^[0-9A-Fa-f-]+$ ]]; then
     kill "$psql_pid" 2>/dev/null
-    wait "$psql_pid" 2>/dev/null
+    stop_coproc "$psql_pid"
     return 1
   fi
   pg_dump --snapshot="$snapshot" --format=custom --compress=6 --no-owner --no-privileges \
     --dbname="$url" --file="$out" 2>>"$err" || status=1
   if [ "$status" = 0 ]; then
-    printf '%s;\n' "$PG_COUNT_SQL" "SELECT '__END__'" 1>&"$to_psql"
-    : >"$manifest"
-    while IFS= read -r -t 600 line <&"$from_psql"; do
-      [ "$line" = "__END__" ] && break
-      printf '%s\n' "$line" >>"$manifest"
-    done
+    if printf '%s;\n' "$PG_COUNT_SQL" "SELECT '__END__'" 1>&"$to_psql" 2>/dev/null; then
+      : >"$manifest"
+      while IFS= read -r -t 600 line <&"$from_psql"; do
+        [ "$line" = "__END__" ] && break
+        printf '%s\n' "$line" >>"$manifest"
+      done
+    fi
     [ "$line" = "__END__" ] || status=1
   fi
-  printf '%s\n' "COMMIT;" '\q' 1>&"$to_psql" 2>/dev/null
-  wait "$psql_pid" 2>/dev/null
+  if [ "$status" = 0 ]; then
+    printf '%s\n' "COMMIT;" '\q' 1>&"$to_psql" 2>/dev/null || true
+  else
+    kill "$psql_pid" 2>/dev/null   # timeout or error: never wait on a client that may be blocked
+  fi
+  stop_coproc "$psql_pid"
   [ "$status" = 0 ] \
     && pg_restore --file=/dev/null "$out" 2>>"$err" \
     && valid_manifest "$manifest"
 }
 
-# Row counts taken from a mysqldump file written with --skip-extended-insert (one INSERT per
-# row), so they describe exactly what the dump contains. Tables without rows count as 0.
+# Row counts taken from a mysqldump file written with --skip-extended-insert and --add-locks:
+# one INSERT per row, and table data only between `LOCK TABLES <t> WRITE;` and `UNLOCK TABLES;`.
+# Only those INSERTs count, so INSERT text inside a dumped routine never adds phantom rows.
+# Quoted identifiers are parsed with doubled-backtick escaping. Tables without rows count as 0.
 mysql_manifest_from_dump() {
   gunzip -c "$1" | awk '
-    /^CREATE TABLE `/ { split($0, p, "`"); if (!(p[2] in n)) n[p[2]] = 0 }
-    /^INSERT INTO `/  { split($0, p, "`"); n[p[2]]++ }
+    function ident(s, start,    i, c, out) {
+      out = ""
+      for (i = start; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "`") {
+          if (substr(s, i + 1, 1) == "`") { out = out "`"; i++; continue }
+          return out
+        }
+        out = out c
+      }
+      return ""
+    }
+    /^CREATE TABLE `/            { t = ident($0, 15); if (!(t in n)) n[t] = 0; next }
+    /^LOCK TABLES `.*` WRITE;$/  { data = ident($0, 14); next }
+    /^UNLOCK TABLES;$/           { data = ""; next }
+    data != "" && index($0, "INSERT INTO `") == 1 {
+      if (ident($0, 14) == data) n[data]++
+    }
     END { for (t in n) printf "%s\t%d\n", t, n[t] }' | LC_ALL=C sort
 }
 

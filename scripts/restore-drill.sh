@@ -17,6 +17,8 @@ set -uo pipefail
 # shellcheck source=scripts/lib.sh
 . "$(dirname "$0")/lib.sh"
 
+trap '' PIPE
+
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 
 read -r -a targets <<<"${DRILL_TARGETS:-}"

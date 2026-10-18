@@ -19,6 +19,9 @@ set -uo pipefail
 # shellcheck source=scripts/lib.sh
 . "$(dirname "$0")/lib.sh"
 
+# A write to a client that already exited must fail that one target, not kill the whole run.
+trap '' PIPE
+
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 
 for var in AGE_RECIPIENT BACKUP_BUCKET; do
@@ -60,7 +63,7 @@ dump_mysql() {
   # --skip-extended-insert writes one INSERT per row, so the manifest is counted from the dump
   # itself and always matches it.
   MYSQL_PWD="$MYSQL_URL_PASSWORD" mysqldump --host="$MYSQL_URL_HOST" --port="$MYSQL_URL_PORT" \
-    --user="$MYSQL_URL_USER" --single-transaction --skip-extended-insert --routines --triggers \
+    --user="$MYSQL_URL_USER" --single-transaction --skip-extended-insert --add-locks --routines --triggers \
     --events --skip-lock-tables "$MYSQL_URL_DATABASE" 2>>"$err" \
     | gzip -6 >"$out" \
     && gzip -t "$out" \
