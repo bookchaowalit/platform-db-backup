@@ -32,7 +32,7 @@ case "$object" in
     # `SET transaction_timeout`, which servers older than 17 reject, so drop that one line and
     # apply the script in a single transaction that stops on the first error.
     pg_restore --no-owner --no-privileges --clean --if-exists --file="$work/restore.sql" "$work/backup"
-    sed -i '/^SET transaction_timeout = /d' "$work/restore.sql"
+    strip_pg_preamble_setting "$work/restore.sql"
     psql --dbname="$target_url" --no-psqlrc --set ON_ERROR_STOP=1 --single-transaction \
       --quiet --file="$work/restore.sql"
     ;;

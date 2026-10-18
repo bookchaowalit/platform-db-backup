@@ -34,7 +34,9 @@ if [ "${#targets[@]}" -eq 0 ]; then
 fi
 
 export TZ="${BACKUP_TZ:-Asia/Bangkok}"
-stamp="$(date +%Y-%m-%dT%H%M)"
+# Seconds plus a random suffix: a retry never overwrites an earlier run's objects, so a dump and
+# its manifest always come from the same run.
+stamp="$(date +%Y-%m-%dT%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
 day_of_week="$(date +%u)"  # 7 = Sunday
 day_of_month="$(date +%d)"
 work="$(mktemp -d)"
@@ -44,25 +46,26 @@ failed=()
 succeeded=0
 total_bytes=0
 
+# Each dumper writes the dump and its manifest (exact row count per table, consistent with the
+# dump) and sends client errors to the given file, never to the log.
 dump_postgres() {
-  local url="$1" out="$2"
-  pg_dump --format=custom --compress=6 --no-owner --no-privileges --dbname="$url" --file="$out" \
-    && pg_restore --file=/dev/null "$out" \
-    && pg_table_counts "$url" >"$out.manifest.tsv"
-  # pg_restore --file=/dev/null reads every data block, not just the table of contents. The
-  # manifest (exact row count per table, taken right after the dump) lets a restore drill prove
-  # the restored copy is complete; rows written between dump and count can make it differ slightly.
+  local url="$1" out="$2" err="$3"
+  # Also validates the archive by reading every data block (pg_restore --file=/dev/null).
+  pg_dump_with_manifest "$url" "$out" "$out.manifest.tsv" "$err"
 }
 
 dump_mysql() {
-  local url="$1" out="$2"
+  local url="$1" out="$2" err="$3"
   parse_mysql_url "$url" || return 64
+  # --skip-extended-insert writes one INSERT per row, so the manifest is counted from the dump
+  # itself and always matches it.
   MYSQL_PWD="$MYSQL_URL_PASSWORD" mysqldump --host="$MYSQL_URL_HOST" --port="$MYSQL_URL_PORT" \
-    --user="$MYSQL_URL_USER" --single-transaction --routines --triggers --events --skip-lock-tables \
-    "$MYSQL_URL_DATABASE" \
+    --user="$MYSQL_URL_USER" --single-transaction --skip-extended-insert --routines --triggers \
+    --events --skip-lock-tables "$MYSQL_URL_DATABASE" 2>>"$err" \
     | gzip -6 >"$out" \
     && gzip -t "$out" \
-    && mysql_table_counts >"$out.manifest.tsv"
+    && mysql_manifest_from_dump "$out" >"$out.manifest.tsv" \
+    && valid_manifest "$out.manifest.tsv"
 }
 
 for target in "${targets[@]}"; do
@@ -89,7 +92,8 @@ for target in "${targets[@]}"; do
   name="$target/$stamp.$ext.age"
   log "START $target"
 
-  "$dumper" "$url" "$raw" 2>"$work/$target.err"
+  : >"$work/$target.err"
+  "$dumper" "$url" "$raw" "$work/$target.err"
   status=$?
   if [ "$status" -ne 0 ]; then
     # Never log the raw client error: libpq and mysql can echo parts of the connection string.
@@ -111,9 +115,10 @@ for target in "${targets[@]}"; do
   rm -f "$raw" "$raw.manifest.tsv"
 
   manifest_name="${name%.age}.manifest.tsv.age"
-  # The manifest goes up first: a dump object without its manifest never exists.
-  if ! rclone copyto --s3-no-check-bucket "$manifest_enc" "r2:$BACKUP_BUCKET/daily/$manifest_name" \
-    || ! rclone copyto --s3-no-check-bucket "$enc" "r2:$BACKUP_BUCKET/daily/$name"; then
+  # The dump goes up first and its manifest last, so a manifest only ever exists next to a
+  # complete dump; the restore drill starts from manifests.
+  if ! rclone copyto --s3-no-check-bucket "$enc" "r2:$BACKUP_BUCKET/daily/$name" \
+    || ! rclone copyto --s3-no-check-bucket "$manifest_enc" "r2:$BACKUP_BUCKET/daily/$manifest_name"; then
     log "FAIL $target: upload failed"
     failed+=("$target")
     rm -f "$enc" "$manifest_enc"
@@ -124,8 +129,9 @@ for target in "${targets[@]}"; do
   copy_ok=1
   for tier in weekly monthly; do
     if { [ "$tier" = weekly ] && [ "$day_of_week" = "7" ]; } || { [ "$tier" = monthly ] && [ "$day_of_month" = "01" ]; }; then
-      rclone copyto --s3-no-check-bucket "$manifest_enc" "r2:$BACKUP_BUCKET/$tier/$manifest_name" || copy_ok=0
-      rclone copyto --s3-no-check-bucket "$enc" "r2:$BACKUP_BUCKET/$tier/$name" || copy_ok=0
+      rclone copyto --s3-no-check-bucket "$enc" "r2:$BACKUP_BUCKET/$tier/$name" \
+        && rclone copyto --s3-no-check-bucket "$manifest_enc" "r2:$BACKUP_BUCKET/$tier/$manifest_name" \
+        || copy_ok=0
     fi
   done
   if [ "$copy_ok" = 0 ]; then
