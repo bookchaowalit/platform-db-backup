@@ -192,3 +192,28 @@ mysql_table_counts() {
   } >"${MYSQL_COUNTS_OUT:?set MYSQL_COUNTS_OUT}.unsorted" || return 1
   LC_ALL=C sort "$MYSQL_COUNTS_OUT.unsorted" >"$MYSQL_COUNTS_OUT" && rm -f "$MYSQL_COUNTS_OUT.unsorted"
 }
+
+# Roles named in CREATE POLICY … TO … statements of a pg_restore SQL script. Roles are
+# cluster-wide and not part of a database dump, so a restore onto a fresh server fails with
+# "role … does not exist" unless they are created first. Prints one role name per line.
+pg_policy_roles() {
+  awk '/^CREATE POLICY / {stmt = ""; inpol = 1}
+       inpol {stmt = stmt " " $0; if ($0 ~ /;[[:space:]]*$/) {print stmt; inpol = 0}}' "$1" \
+    | sed -E 's/ (USING|WITH CHECK) .*$//; s/;.*$//' \
+    | sed -nE 's/.* TO (.*)$/\1/p' \
+    | tr ',' '\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^"(.*)"$/\1/' \
+    | grep -vE '^(public|PUBLIC|CURRENT_USER|SESSION_USER|CURRENT_ROLE)?$' | LC_ALL=C sort -u
+}
+
+# Create every policy role the script needs that the target server lacks, as NOLOGIN roles.
+#   ensure_policy_roles <restore.sql> <database-url>
+ensure_policy_roles() {
+  local role
+  while IFS= read -r role; do
+    [ -n "$role" ] || continue
+    psql --dbname="$2" --no-psqlrc --quiet --set ON_ERROR_STOP=1 --set role="$role" <<'SQL' || return 1
+SELECT format('CREATE ROLE %I NOLOGIN', :'role') WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role') \gexec
+SQL
+    echo "ensured role $role"
+  done < <(pg_policy_roles "$1")
+}
