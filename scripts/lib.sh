@@ -92,6 +92,8 @@ stop_coproc() {
     sleep 1
   done
   kill "$pid" 2>/dev/null
+  sleep 1
+  kill -9 "$pid" 2>/dev/null
   wait "$pid" 2>/dev/null
   return 0
 }
@@ -104,8 +106,9 @@ stop_coproc() {
 pg_dump_with_manifest() {
   local url="$1" out="$2" manifest="$3" err="$4" snapshot="" line="" status=0
   local to_psql="" from_psql="" psql_pid=""
+  # exec: the coprocess PID is psql itself, so killing it never leaves a client behind.
   coproc SNAP {
-    psql --dbname="$url" --no-psqlrc --quiet --no-align --tuples-only --field-separator=$'\t' \
+    exec psql --dbname="$url" --no-psqlrc --quiet --no-align --tuples-only --field-separator=$'\t' \
       --set ON_ERROR_STOP=1 2>>"$err"
   }
   # A client that fails immediately may already be gone, and bash then unsets SNAP.
@@ -164,6 +167,9 @@ mysql_manifest_from_dump() {
       }
       return ""
     }
+    # Routines and events come after all table data; nothing past this point is row data.
+    /^-- Dumping (routines|events) for database/ { done = 1 }
+    done                         { next }
     /^CREATE TABLE `/            { t = ident($0, 15); if (!(t in n)) n[t] = 0; next }
     /^LOCK TABLES `.*` WRITE;$/  { data = ident($0, 14); next }
     /^UNLOCK TABLES;$/           { data = ""; next }
@@ -193,27 +199,65 @@ mysql_table_counts() {
   LC_ALL=C sort "$MYSQL_COUNTS_OUT.unsorted" >"$MYSQL_COUNTS_OUT" && rm -f "$MYSQL_COUNTS_OUT.unsorted"
 }
 
-# Roles named in CREATE POLICY … TO … statements of a pg_restore SQL script. Roles are
-# cluster-wide and not part of a database dump, so a restore onto a fresh server fails with
-# "role … does not exist" unless they are created first. Prints one role name per line.
+# Roles named in the TO clause of the archive's POLICY entries. Roles are cluster-wide and not
+# part of a database dump, so restoring onto a fresh server fails with "role … does not exist"
+# unless they exist first. Only POLICY archive entries are rendered (never table data or function
+# bodies), and identifiers are tokenized with PostgreSQL quoting ("a""b", commas inside quotes).
+# Prints one role name per line.
+#   pg_policy_roles <custom-format-archive> <work-dir>
 pg_policy_roles() {
-  awk '/^CREATE POLICY / {stmt = ""; inpol = 1}
-       inpol {stmt = stmt " " $0; if ($0 ~ /;[[:space:]]*$/) {print stmt; inpol = 0}}' "$1" \
-    | sed -E 's/ (USING|WITH CHECK) .*$//; s/;.*$//' \
-    | sed -nE 's/.* TO (.*)$/\1/p' \
-    | tr ',' '\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^"(.*)"$/\1/' \
-    | grep -vE '^(public|PUBLIC|CURRENT_USER|SESSION_USER|CURRENT_ROLE)?$' | LC_ALL=C sort -u
+  local archive="$1" dir="$2"
+  pg_restore --list "$archive" | grep -E '^[0-9]+; [0-9]+ [0-9]+ POLICY ' >"$dir/policies.list" || return 0
+  pg_restore --use-list="$dir/policies.list" --file="$dir/policies.sql" "$archive" || return 1
+  awk '
+    function flush() { if (tok != "" || quoted) roles[tok] = 1; tok = ""; quoted = 0 }
+    /^CREATE POLICY / { stmt = ""; inpol = 1 }
+    inpol { stmt = stmt " " $0; if ($0 ~ /;[[:space:]]*$/) { parse(stmt); inpol = 0 } }
+    function parse(st,    i, c, n, inq, depth, state, word) {
+      # Walk the statement outside quotes/parentheses; collect identifiers after " TO ".
+      state = 0; inq = 0; depth = 0; tok = ""; quoted = 0; word = ""
+      n = length(st)
+      for (i = 1; i <= n; i++) {
+        c = substr(st, i, 1)
+        if (inq) {
+          if (c == "\"") { if (substr(st, i + 1, 1) == "\"") { tok = tok "\""; i++ } else inq = 0 }
+          else tok = tok c
+          continue
+        }
+        if (c == "\"") { inq = 1; quoted = 1; continue }
+        if (c == "(") depth++
+        if (c == ")") depth--
+        if (depth > 0) continue
+        if (state == 1) {
+          if (c == ",") { flush(); continue }
+          if (c ~ /[[:space:];]/) {
+            if (tok == "USING" || tok == "WITH") { tok = ""; break }
+            if (tok != "" || quoted) flush()
+            if (c == ";") break
+            continue
+          }
+          tok = tok c
+          continue
+        }
+        if (c ~ /[[:space:]]/) { if (word == "TO") { state = 1; tok = "" } word = ""; continue }
+        word = word c
+      }
+      if (state == 1) flush()
+    }
+    END { for (r in roles) if (r != "" && r != "public" && r != "PUBLIC" && r != "CURRENT_USER" && r != "SESSION_USER" && r != "CURRENT_ROLE") print r }
+  ' "$dir/policies.sql" | LC_ALL=C sort -u
 }
 
-# Create every policy role the script needs that the target server lacks, as NOLOGIN roles.
-#   ensure_policy_roles <restore.sql> <database-url>
+# Create every policy role the archive needs that the target server lacks, as NOLOGIN roles.
+#   ensure_policy_roles <custom-format-archive> <database-url> <work-dir>
 ensure_policy_roles() {
-  local role
+  local role roles
+  roles="$(pg_policy_roles "$1" "$3")" || return 1
   while IFS= read -r role; do
     [ -n "$role" ] || continue
     psql --dbname="$2" --no-psqlrc --quiet --set ON_ERROR_STOP=1 --set role="$role" <<'SQL' || return 1
 SELECT format('CREATE ROLE %I NOLOGIN', :'role') WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role') \gexec
 SQL
     echo "ensured role $role"
-  done < <(pg_policy_roles "$1")
+  done <<<"$roles"
 }
