@@ -40,7 +40,7 @@ Object names: `<tier>/<target>/<YYYY-MM-DDTHHMM>.<dump|sql.gz>.age`.
 | Railway service | Databases | Connection | Heartbeat job |
 |---|---|---|---|
 | `ops-backups/db-backup` | the 30 Neon databases of own services | dedicated `db_backup` role per Neon project (Neon roles inherit `pg_read_all_data` via `neon_superuser`) | `db-backup` |
-| `db-backup` inside each Railway project with a database (ev3, a2n, tma, scannpop, teeparinwat, enchanting-dream) | that project's Postgres / PostGIS / MySQL | reference variable such as `${{Postgres.DATABASE_URL}}` over the private network, so no database is exposed publicly | `db-backup-<project>` |
+| `db-backup` inside each Railway project with a database (ev3, a2n, tma, scannpop, teeparinwat) | that project's Postgres / PostGIS / MySQL | reference variable such as `${{Postgres.DATABASE_URL}}` over the private network, so no database is exposed publicly | `db-backup-<project>` |
 
 When a Neon `db_backup` password is reset, update the matching `BACKUP_URL_*` in `ops-backups`.
 The next run fails loudly until you do. Railway references follow rotations automatically.
