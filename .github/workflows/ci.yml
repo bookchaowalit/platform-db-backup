@@ -27,7 +27,9 @@ jobs:
         run: |
           set +e
           docker run --rm db-backup:ci
-          code=$?
-          test "$code" -eq 2
+          code_backup=$?
+          docker run --rm db-backup:ci /app/scripts/restore-drill.sh
+          code_drill=$?
+          test "$code_backup" -eq 2 && test "$code_drill" -eq 2
   security:
     uses: bookchaowalit/platform-ci-workflows/.github/workflows/security.yml@c37ef9d113eefb3ed45429717cb7ca201192c3fc # v1.0.1

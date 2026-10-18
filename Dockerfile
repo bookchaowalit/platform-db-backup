@@ -28,4 +28,5 @@ COPY scripts/ /app/scripts/
 RUN chmod 0755 /app/scripts/*.sh
 
 USER dbbackup
-ENTRYPOINT ["/app/scripts/backup.sh"]
+# CMD, not ENTRYPOINT, so a Railway start command can run restore-drill.sh with the same image.
+CMD ["/app/scripts/backup.sh"]

@@ -36,3 +36,27 @@ classify_dump_error() {
   else echo "see a manual run for details"
   fi
 }
+
+# Exact row count per base table, as "schema.table<TAB>count" lines sorted by name.
+pg_table_counts() {
+  psql --dbname="$1" --no-psqlrc --quiet --no-align --tuples-only --field-separator=$'\t' --command="
+    SELECT table_schema || '.' || table_name,
+           (xpath('/row/c/text()', query_to_xml(
+              format('SELECT count(*) AS c FROM %I.%I', table_schema, table_name), false, true, '')))[1]::text
+    FROM information_schema.tables
+    WHERE table_type = 'BASE TABLE' AND table_schema NOT IN ('pg_catalog', 'information_schema')
+    ORDER BY 1"
+}
+
+# Same for MySQL; parse_mysql_url must have run for the database first.
+mysql_table_counts() {
+  local table
+  MYSQL_PWD="$MYSQL_URL_PASSWORD" mysql --host="$MYSQL_URL_HOST" --port="$MYSQL_URL_PORT" \
+    --user="$MYSQL_URL_USER" --batch --skip-column-names "$MYSQL_URL_DATABASE" \
+    --execute="SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name" \
+    | while IFS= read -r table; do
+        printf '%s\t%s\n' "$table" "$(MYSQL_PWD="$MYSQL_URL_PASSWORD" mysql --host="$MYSQL_URL_HOST" \
+          --port="$MYSQL_URL_PORT" --user="$MYSQL_URL_USER" --batch --skip-column-names \
+          "$MYSQL_URL_DATABASE" --execute="SELECT COUNT(*) FROM \`${table//\`/\`\`}\`")"
+      done
+}

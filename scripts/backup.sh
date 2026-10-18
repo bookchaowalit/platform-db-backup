@@ -47,7 +47,11 @@ total_bytes=0
 dump_postgres() {
   local url="$1" out="$2"
   pg_dump --format=custom --compress=6 --no-owner --no-privileges --dbname="$url" --file="$out" \
-    && pg_restore --file=/dev/null "$out"  # reads every data block, not just the table of contents
+    && pg_restore --file=/dev/null "$out" \
+    && pg_table_counts "$url" >"$out.manifest.tsv"
+  # pg_restore --file=/dev/null reads every data block, not just the table of contents. The
+  # manifest (exact row count per table, taken right after the dump) lets a restore drill prove
+  # the restored copy is complete; rows written between dump and count can make it differ slightly.
 }
 
 dump_mysql() {
@@ -57,7 +61,8 @@ dump_mysql() {
     --user="$MYSQL_URL_USER" --single-transaction --routines --triggers --events --skip-lock-tables \
     "$MYSQL_URL_DATABASE" \
     | gzip -6 >"$out" \
-    && gzip -t "$out"
+    && gzip -t "$out" \
+    && mysql_table_counts >"$out.manifest.tsv"
 }
 
 for target in "${targets[@]}"; do
@@ -90,45 +95,51 @@ for target in "${targets[@]}"; do
     # Never log the raw client error: libpq and mysql can echo parts of the connection string.
     log "FAIL $target: dump failed (exit $status, $(classify_dump_error "$work/$target.err"))"
     failed+=("$target")
-    rm -f "$raw"
+    rm -f "$raw" "$raw.manifest.tsv"
     continue
   fi
 
-  if ! age --encrypt --recipient "$AGE_RECIPIENT" --output "$enc" "$raw"; then
+  manifest_enc="$raw.manifest.tsv.age"
+  if ! age --encrypt --recipient "$AGE_RECIPIENT" --output "$enc" "$raw" \
+    || ! age --encrypt --recipient "$AGE_RECIPIENT" --output "$manifest_enc" "$raw.manifest.tsv"; then
     log "FAIL $target: encryption failed"
     failed+=("$target")
-    rm -f "$raw" "$enc"
+    rm -f "$raw" "$raw.manifest.tsv" "$enc" "$manifest_enc"
     continue
   fi
-  rm -f "$raw"
+  tables="$(wc -l <"$raw.manifest.tsv")"
+  rm -f "$raw" "$raw.manifest.tsv"
 
-  if ! rclone copyto --s3-no-check-bucket "$enc" "r2:$BACKUP_BUCKET/daily/$name"; then
+  manifest_name="${name%.age}.manifest.tsv.age"
+  # The manifest goes up first: a dump object without its manifest never exists.
+  if ! rclone copyto --s3-no-check-bucket "$manifest_enc" "r2:$BACKUP_BUCKET/daily/$manifest_name" \
+    || ! rclone copyto --s3-no-check-bucket "$enc" "r2:$BACKUP_BUCKET/daily/$name"; then
     log "FAIL $target: upload failed"
     failed+=("$target")
-    rm -f "$enc"
+    rm -f "$enc" "$manifest_enc"
     continue
   fi
   # Weekly (Sunday) and monthly (1st) copies live under their own prefixes so R2 lifecycle
   # rules can expire each tier on its own schedule.
   copy_ok=1
-  if [ "$day_of_week" = "7" ]; then
-    rclone copyto --s3-no-check-bucket "$enc" "r2:$BACKUP_BUCKET/weekly/$name" || copy_ok=0
-  fi
-  if [ "$day_of_month" = "01" ]; then
-    rclone copyto --s3-no-check-bucket "$enc" "r2:$BACKUP_BUCKET/monthly/$name" || copy_ok=0
-  fi
+  for tier in weekly monthly; do
+    if { [ "$tier" = weekly ] && [ "$day_of_week" = "7" ]; } || { [ "$tier" = monthly ] && [ "$day_of_month" = "01" ]; }; then
+      rclone copyto --s3-no-check-bucket "$manifest_enc" "r2:$BACKUP_BUCKET/$tier/$manifest_name" || copy_ok=0
+      rclone copyto --s3-no-check-bucket "$enc" "r2:$BACKUP_BUCKET/$tier/$name" || copy_ok=0
+    fi
+  done
   if [ "$copy_ok" = 0 ]; then
     log "FAIL $target: weekly/monthly copy failed"
     failed+=("$target")
-    rm -f "$enc"
+    rm -f "$enc" "$manifest_enc"
     continue
   fi
 
   bytes="$(stat -c %s "$enc")"
   total_bytes=$((total_bytes + bytes))
   succeeded=$((succeeded + 1))
-  log "OK $target $bytes bytes -> daily/$name"
-  rm -f "$enc"
+  log "OK $target $bytes bytes, $tables tables -> daily/$name"
+  rm -f "$enc" "$manifest_enc"
 done
 
 ok=true
