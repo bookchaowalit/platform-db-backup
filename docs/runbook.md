@@ -12,15 +12,32 @@
 Railway cron services have no "run now" button. Set the cron schedule to a minute a few
 minutes ahead, redeploy, wait for the run, then set it back to `0 19 * * *` and redeploy.
 
-## Restore drill (do this monthly and after any change to the job)
+## Restore drill (monthly; the monitor's `restore-drill` heartbeat alerts after 35 days)
 
-1. Create a scratch target: a Neon branch of the source project, or a temporary Railway Postgres.
-2. Write `AGE_IDENTITY` from Infisical `/db-backup` to a temp file with mode 0600.
-3. Run `scripts/restore.sh daily/<target>/<stamp>.dump.age "$SCRATCH_URL"` from a container built
-   from this repo (the local machine has no PostgreSQL client tools).
-4. Compare row counts of the main tables against production, and record the result (date,
-   target, object, counts, duration) in the operations log.
-5. Delete the scratch target and the temp key file.
+`scripts/restore-drill.sh` does the whole drill: for each target it takes the newest daily backup
+that has a manifest, restores it into a uniquely named scratch database, recounts every table,
+compares with the manifest (written from the same snapshot as the dump) and drops the scratch
+database. Missing roles named by row-level security policies are created as NOLOGIN first.
+
+1. In Railway project `ops-backups`, create three services:
+   - `drill-postgres`: image `postgres:18.0`, variables `POSTGRES_USER=drill`, a random
+     alphanumeric `POSTGRES_PASSWORD`, `POSTGRES_DB=postgres`.
+   - `drill-mysql`: image `mysql:9.4.0`, a random alphanumeric `MYSQL_ROOT_PASSWORD`.
+   - `restore-drill`: source `bookchaowalit/platform-db-backup`, start command
+     `/app/scripts/restore-drill.sh`, restart policy NEVER, cron a few minutes ahead. Variables:
+     `DRILL_TARGETS` (e.g. `empire ev3 tma`; cover every engine), `DRILL_PG_ADMIN_URL=postgresql://drill:${{drill-postgres.POSTGRES_PASSWORD}}@drill-postgres.railway.internal:5432/postgres`,
+     `DRILL_MYSQL_ADMIN_URL=mysql://root:${{drill-mysql.MYSQL_ROOT_PASSWORD}}@drill-mysql.railway.internal:3306/mysql`,
+     `AGE_IDENTITY` (from Infisical `/db-backup`), `BACKUP_BUCKET=db-backups`, the `RCLONE_CONFIG_R2_*`
+     and `HEARTBEAT_TOKEN` as references to `db-backup`, and
+     `HEARTBEAT_URL=https://solo-empire-monitor.bookchaowalit.workers.dev/heartbeat/restore-drill`.
+2. Wait for the run. Each target logs `OK <target> <object>: <tables> tables, <rows> rows match
+   the manifest (<seconds>s)`, and the heartbeat records the result.
+3. **Delete all three services right away.** `restore-drill` holds the decryption key.
+4. Record the result (date, targets, objects, tables, rows, durations) in the operations log.
+
+First drill, 2026-10-18 06:12 UTC: empire 32 tables / 71,613 rows (3 s), ev3 129 / 1,544 (4 s),
+tma 74 / 1,438 (11 s). All matched the manifests. The previous run had found the missing
+policy roles.
 
 ## Rotating credentials
 
