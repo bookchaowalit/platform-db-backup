@@ -21,6 +21,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: ShellCheck
         run: shellcheck scripts/*.sh
+      - name: Unit tests (scripts/lib.sh helpers, run in bash from Python's unittest)
+        run: python3 -m unittest discover -s tests -v
       - name: Build image
         run: docker build --tag db-backup:ci .
       - name: Smoke test (missing config fails fast)
