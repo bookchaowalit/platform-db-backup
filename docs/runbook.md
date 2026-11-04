@@ -25,7 +25,8 @@ database. Missing roles named by row-level security policies are created as NOLO
    - `drill-mysql`: image `mysql:9.4.0`, a random alphanumeric `MYSQL_ROOT_PASSWORD`.
    - `restore-drill`: source `bookchaowalit/platform-db-backup`, start command
      `/app/scripts/restore-drill.sh`, restart policy NEVER, cron a few minutes ahead. Variables:
-     `DRILL_TARGETS` (e.g. `empire ev3 tma`; cover every engine), `DRILL_PG_ADMIN_URL=postgresql://drill:${{drill-postgres.POSTGRES_PASSWORD}}@drill-postgres.railway.internal:5432/postgres`,
+     `DRILL_TARGETS` (e.g. `empire ev3 tma platform-security`; cover every engine, and always include
+     `platform-security`: its audit log is append-only and cannot be recreated), `DRILL_PG_ADMIN_URL=postgresql://drill:${{drill-postgres.POSTGRES_PASSWORD}}@drill-postgres.railway.internal:5432/postgres`,
      `DRILL_MYSQL_ADMIN_URL=mysql://root:${{drill-mysql.MYSQL_ROOT_PASSWORD}}@drill-mysql.railway.internal:3306/mysql`,
      `AGE_IDENTITY` (from Infisical `/db-backup`), `BACKUP_BUCKET=db-backups`, the `RCLONE_CONFIG_R2_*`
      and `HEARTBEAT_TOKEN` as references to `db-backup`, and
