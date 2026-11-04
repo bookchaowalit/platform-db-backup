@@ -29,7 +29,7 @@ database. Missing roles named by row-level security policies are created as NOLO
      `DRILL_MYSQL_ADMIN_URL=mysql://root:${{drill-mysql.MYSQL_ROOT_PASSWORD}}@drill-mysql.railway.internal:3306/mysql`,
      `AGE_IDENTITY` (from Infisical `/db-backup`), `BACKUP_BUCKET=db-backups`, the `RCLONE_CONFIG_R2_*`
      and `HEARTBEAT_TOKEN` as references to `db-backup`, and
-     `HEARTBEAT_URL=https://solo-empire-monitor.bookchaowalit.workers.dev/heartbeat/restore-drill`.
+     `HEARTBEAT_URL=https://monitor.bookchaowalit.com/heartbeat/restore-drill`.
 2. Wait for the run. Each target logs `OK <target> <object>: <tables> tables, <rows> rows match
    the manifest (<seconds>s)`, and the heartbeat records the result.
 3. **Delete all three services right away.** `restore-drill` holds the decryption key.
