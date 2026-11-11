@@ -11,6 +11,7 @@
 #   BACKUP_BUCKET             R2 bucket name
 #   RCLONE_CONFIG_R2_*        rclone remote "r2" (type s3, provider Cloudflare)
 # Optional:
+#   BACKUP_SCHEMA_<NAME>      PostgreSQL only: dump and count this one schema (e.g. x_intel on Supabase)
 #   HEARTBEAT_URL, HEARTBEAT_TOKEN   uptime monitor heartbeat endpoint
 #   BACKUP_TZ                 timezone used for file names and the weekly/monthly copies
 #                             (default Asia/Bangkok)
@@ -52,9 +53,9 @@ total_bytes=0
 # Each dumper writes the dump and its manifest (exact row count per table, consistent with the
 # dump) and sends client errors to the given file, never to the log.
 dump_postgres() {
-  local url="$1" out="$2" err="$3"
+  local url="$1" out="$2" err="$3" schema="${4:-}"
   # Also validates the archive by reading every data block (pg_restore --file=/dev/null).
-  pg_dump_with_manifest "$url" "$out" "$out.manifest.tsv" "$err"
+  pg_dump_with_manifest "$url" "$out" "$out.manifest.tsv" "$err" "$schema"
 }
 
 dump_mysql() {
@@ -95,8 +96,9 @@ for target in "${targets[@]}"; do
   name="$target/$stamp.$ext.age"
   log "START $target"
 
+  schema_key="BACKUP_SCHEMA_$(printf '%s' "$target" | tr '[:lower:]-' '[:upper:]_')"
   : >"$work/$target.err"
-  "$dumper" "$url" "$raw" "$work/$target.err"
+  "$dumper" "$url" "$raw" "$work/$target.err" "${!schema_key:-}"
   status=$?
   if [ "$status" -ne 0 ]; then
     # Never log the raw client error: libpq and mysql can echo parts of the connection string.

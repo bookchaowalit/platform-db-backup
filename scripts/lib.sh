@@ -77,6 +77,22 @@ FROM information_schema.tables
 WHERE table_type = 'BASE TABLE' AND table_schema NOT IN ('pg_catalog', 'information_schema')
 ORDER BY 1"
 
+# PG_COUNT_SQL limited to one schema (a name already checked by valid_schema_name).
+pg_count_sql_for() {
+  if [ -n "${1:-}" ]; then
+    local quote="'" filter
+    filter="AND table_schema = ${quote}$1${quote}"$'\n'"ORDER BY 1"
+    printf '%s' "${PG_COUNT_SQL/ORDER BY 1/$filter}"
+  else
+    printf '%s' "$PG_COUNT_SQL"
+  fi
+}
+
+# A plain lower-case identifier: the only form accepted for BACKUP_SCHEMA_<NAME>.
+valid_schema_name() {
+  [[ "${1:-}" =~ ^[a-z_][a-z0-9_]{0,62}$ ]]
+}
+
 # Exact row count per base table of a live database, as "schema.table<TAB>count" lines.
 pg_table_counts() {
   psql --dbname="$1" --no-psqlrc --quiet --no-align --tuples-only --field-separator=$'\t' \
@@ -102,9 +118,16 @@ stop_coproc() {
 # transaction stays open, exports its snapshot to pg_dump and then counts every table, so rows
 # written meanwhile can never make the manifest disagree with the dump. Every coprocess write
 # and read is guarded (the callers ignore SIGPIPE), and the coprocess is always stopped.
-#   pg_dump_with_manifest <url> <dump-file> <manifest-file> <stderr-file>
+# An optional 5th argument dumps and counts one schema only (a shared database such as Supabase,
+# whose auth tables a read-only role cannot dump under row-level security).
+#   pg_dump_with_manifest <url> <dump-file> <manifest-file> <stderr-file> [schema]
 pg_dump_with_manifest() {
-  local url="$1" out="$2" manifest="$3" err="$4" snapshot="" line="" status=0
+  local url="$1" out="$2" manifest="$3" err="$4" schema="${5:-}" snapshot="" line="" status=0
+  local -a only=()
+  if [ -n "$schema" ]; then
+    valid_schema_name "$schema" || return 64
+    only=(--schema="$schema")
+  fi
   local to_psql="" from_psql="" psql_pid=""
   # exec: the coprocess PID is psql itself, so killing it never leaves a client behind.
   coproc SNAP {
@@ -126,10 +149,10 @@ pg_dump_with_manifest() {
     stop_coproc "$psql_pid"
     return 1
   fi
-  pg_dump --snapshot="$snapshot" --format=custom --compress=6 --no-owner --no-privileges \
+  pg_dump --snapshot="$snapshot" --format=custom --compress=6 --no-owner --no-privileges "${only[@]}" \
     --dbname="$url" --file="$out" 2>>"$err" || status=1
   if [ "$status" = 0 ]; then
-    if printf '%s;\n' "$PG_COUNT_SQL" "SELECT '__END__'" 1>&"$to_psql" 2>/dev/null; then
+    if printf '%s;\n' "$(pg_count_sql_for "$schema")" "SELECT '__END__'" 1>&"$to_psql" 2>/dev/null; then
       : >"$manifest"
       while IFS= read -r -t 600 line <&"$from_psql"; do
         [ "$line" = "__END__" ] && break

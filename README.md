@@ -26,6 +26,7 @@ Object names: `<tier>/<target>/<YYYY-MM-DDTHHMM>.<dump|sql.gz>.age`.
 |---|---|
 | `BACKUP_TARGETS` | Space-separated target names, e.g. `habits tax ev3 tma` |
 | `BACKUP_URL_<NAME>` | Connection URL for each target (`postgres://…` or `mysql://…`). `NAME` is the target upper-cased, with `-` replaced by `_` |
+| `BACKUP_SCHEMA_<NAME>` | Optional, PostgreSQL only: dump and count one schema (e.g. `x_intel` on the Supabase `x-intel` project, where a read-only role cannot dump the RLS-protected `auth` tables) |
 | `AGE_RECIPIENT` | age **public** key. The private key is kept offline by the owner and never stored on Railway |
 | `BACKUP_BUCKET` | R2 bucket (`db-backups`) |
 | `RCLONE_CONFIG_R2_TYPE` | `s3` |
