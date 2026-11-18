@@ -130,6 +130,8 @@ strip_neon_column_options() {
 #   views or rules in the schema that read relations of other schemas,
 #   columns whose type lives in another schema (enums, domains, extension types),
 #   column defaults calling functions or sequences of other schemas (nextval('other.seq')),
+#   row-level security policies calling functions or reading tables of other schemas (auth.uid()),
+#   oid columns (large-object references: pg_dump --schema leaves large objects out),
 #   partitions or inheritance children that cross the schema boundary (rows the manifest counts
 #   through the parent but pg_dump --schema leaves out).
 pg_cross_schema_fk_sql_for() {
@@ -155,6 +157,17 @@ pg_cross_schema_fk_sql_for() {
    LEFT JOIN pg_class rc ON d.refclassid = 'pg_class'::regclass AND rc.oid = d.refobjid
    JOIN pg_namespace rn ON rn.oid = coalesce(fp.pronamespace, rc.relnamespace)
   WHERE tn.nspname = '$1' AND rn.nspname NOT IN ('$1', 'pg_catalog', 'information_schema'))
++(SELECT count(DISTINCT (d.objid, d.refobjid)) FROM pg_policy po
+   JOIN pg_class t ON t.oid = po.polrelid JOIN pg_namespace tn ON tn.oid = t.relnamespace
+   JOIN pg_depend d ON d.classid = 'pg_policy'::regclass AND d.objid = po.oid
+   LEFT JOIN pg_proc fp ON d.refclassid = 'pg_proc'::regclass AND fp.oid = d.refobjid
+   LEFT JOIN pg_class rc ON d.refclassid = 'pg_class'::regclass AND rc.oid = d.refobjid
+   JOIN pg_namespace rn ON rn.oid = coalesce(fp.pronamespace, rc.relnamespace)
+  WHERE tn.nspname = '$1' AND rn.nspname NOT IN ('$1', 'pg_catalog', 'information_schema'))
++(SELECT count(*) FROM pg_attribute a
+   JOIN pg_class t ON t.oid = a.attrelid JOIN pg_namespace tn ON tn.oid = t.relnamespace
+  WHERE tn.nspname = '$1' AND t.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped
+    AND a.atttypid = 'oid'::regtype)
 +(SELECT count(*) FROM pg_inherits i
    JOIN pg_class p ON p.oid = i.inhparent JOIN pg_namespace pn ON pn.oid = p.relnamespace
    JOIN pg_class k ON k.oid = i.inhrelid JOIN pg_namespace kn ON kn.oid = k.relnamespace

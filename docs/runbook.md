@@ -72,7 +72,7 @@ does not lose the backups.
   than 400 days, and never after a failed copy.
 - Objects stay **age-encrypted**. The host has no `AGE_IDENTITY`; the key never goes there.
 - After the copy, `rclone check --one-way` confirms every bucket object is in the mirror with the
-  same hash. Freshness is checked against a target list that does not come from the bucket alone:
+  same MD5 (a size-only comparison, "hashes could not be checked", fails as `check-hash`). Freshness is checked against a target list that does not come from the bucket alone:
   bucket `daily/` prefixes + every target the mirror has ever held + `/etc/db-backups-mirror/expected`,
   minus `/etc/db-backups-mirror/retired`. Each must have a manifest newer than 36 h **and** the dump
   with the same name stem beside it (the pair `restore-drill.sh` picks), so a prefix deleted from R2

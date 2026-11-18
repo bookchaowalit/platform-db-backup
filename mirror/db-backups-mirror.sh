@@ -24,8 +24,14 @@ mkdir -p "$DEST" && chmod 700 "$DEST"
 if ! rclone copy r2:db-backups "$DEST" --immutable --s3-no-check-bucket --transfers 4 --log-level NOTICE; then
   problems+=("copy")
 fi
-if ! rclone check r2:db-backups "$DEST" --one-way --s3-no-check-bucket --log-level ERROR; then
+# One-way check by MD5 (R2 single-part ETags). If rclone can only compare sizes it says
+# "hashes could not be checked"; that is a failed check too, not a pass.
+check_log="$(rclone check r2:db-backups "$DEST" --one-way --s3-no-check-bucket --log-level NOTICE 2>&1)"
+check_rc=$?
+if [ "$check_rc" -ne 0 ]; then
   problems+=("check")
+elif grep -qi 'could not be checked' <<<"$check_log"; then
+  problems+=("check-hash")
 fi
 
 # Expected targets do not come from the bucket alone, so a prefix deleted from R2 (or a target
