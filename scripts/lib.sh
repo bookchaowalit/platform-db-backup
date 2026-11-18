@@ -132,7 +132,8 @@ strip_neon_column_options() {
 #   columns whose type lives in another schema (enums, domains, extension types),
 #   column defaults calling functions or sequences of other schemas (nextval('other.seq')),
 #   row-level security policies calling functions or reading tables of other schemas (auth.uid()),
-#   oid columns (large-object references: pg_dump --schema leaves large objects out),
+#   oid columns or domains over oid (large-object references: pg_dump --schema leaves large
+#   objects out), triggers whose function lives in another schema,
 #   partitions or inheritance children that cross the schema boundary (rows the manifest counts
 #   through the parent but pg_dump --schema leaves out).
 pg_cross_schema_fk_sql_for() {
@@ -172,7 +173,13 @@ pg_cross_schema_fk_sql_for() {
 +(SELECT count(*) FROM pg_attribute a
    JOIN pg_class t ON t.oid = a.attrelid JOIN pg_namespace tn ON tn.oid = t.relnamespace
   WHERE tn.nspname = '$1' AND t.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped
-    AND a.atttypid = 'oid'::regtype)
+    AND (a.atttypid = 'oid'::regtype
+         OR a.atttypid IN (SELECT oid FROM pg_type WHERE typtype = 'd' AND typbasetype = 'oid'::regtype)))
++(SELECT count(*) FROM pg_trigger g
+   JOIN pg_class t ON t.oid = g.tgrelid JOIN pg_namespace tn ON tn.oid = t.relnamespace
+   JOIN pg_proc fp ON fp.oid = g.tgfoid JOIN pg_namespace fn ON fn.oid = fp.pronamespace
+  WHERE tn.nspname = '$1' AND NOT g.tgisinternal
+    AND fn.nspname NOT IN ('$1', 'pg_catalog', 'information_schema'))
 +(SELECT count(*) FROM pg_inherits i
    JOIN pg_class p ON p.oid = i.inhparent JOIN pg_namespace pn ON pn.oid = p.relnamespace
    JOIN pg_class k ON k.oid = i.inhrelid JOIN pg_namespace kn ON kn.oid = k.relnamespace
