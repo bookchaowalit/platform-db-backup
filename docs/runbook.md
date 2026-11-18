@@ -45,8 +45,11 @@ restored: 34 tables / 150,474 rows match. Rerun 15:35 UTC with the fix: **44/44 
 services were deleted at once.
 
 One-schema targets (`BACKUP_SCHEMA_<NAME>`) now fail the nightly backup with the category
-`cross-schema dependency` when a foreign key leaves the schema (such a dump cannot restore alone);
-x-intel restored cleanly in both drills, so it has none today.
+`cross-schema dependency` when anything in the schema depends on another schema — a foreign key,
+a view or rule reading another schema, a column type from another schema, or a partition or
+inheritance child across the boundary (such a dump cannot restore alone, or its manifest counts
+rows the dump lacks);
+x-intel restored cleanly in both drills and the check counts 0 for it (2026-11-18).
 
 First drill, 2026-10-18 06:12 UTC: empire 32 tables / 71,613 rows (3 s), ev3 129 / 1,544 (4 s),
 tma 74 / 1,438 (11 s). All matched the manifests. The previous run had found the missing
@@ -65,7 +68,8 @@ does not lose the backups.
 - **Copy, never sync, never overwrite**: objects removed from R2 (retention, or a wipe) stay in the
   mirror, and `--immutable` refuses to replace a mirrored object whose R2 copy changed (backup
   objects are never rewritten, so a change is damage or tampering): the run fails `copy` and the
-  mirror keeps its copy. Local files older than 400 days are pruned by the script.
+  mirror keeps its copy. The script prunes only its own `*.age` files under `daily/`, `weekly/`, `monthly/` older
+  than 400 days, and never after a failed copy.
 - Objects stay **age-encrypted**. The host has no `AGE_IDENTITY`; the key never goes there.
 - After the copy, `rclone check --one-way` confirms every bucket object is in the mirror with the
   same hash. Freshness is checked against a target list that does not come from the bucket alone:

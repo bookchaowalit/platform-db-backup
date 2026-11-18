@@ -107,6 +107,13 @@ class StripNeonColumnOptionsTests(unittest.TestCase):
             "$_$;\n",
         )
 
+    def test_a_dollar_pair_inside_a_string_literal_opens_no_body(self) -> None:
+        out = self.run_on(
+            "CREATE TABLE s.t (c text DEFAULT \'$$\'::text);\n"
+            "ALTER TABLE ONLY s.t ALTER COLUMN c SET (pg_attver=1);\n"
+        )
+        self.assertEqual(out, "CREATE TABLE s.t (c text DEFAULT \'$$\'::text);\n")
+
     def test_never_touches_copy_data(self) -> None:
         script = (
             "COPY s.notes (body) FROM stdin;\n"

@@ -8,7 +8,10 @@
 # exists only on the mirror host (SC1091).
 # shellcheck disable=SC1091,SC2086
 set -uo pipefail
-set -a; . "${MIRROR_ENV_FILE:-/etc/db-backups-mirror/env}"; set +a
+set -a
+# shellcheck source=/dev/null
+. "${MIRROR_ENV_FILE:-/etc/db-backups-mirror/env}"
+set +a
 DEST="${DEST:-/var/lib/db-backups-mirror}"
 KEEP_DAYS="${KEEP_DAYS:-400}"
 FRESH_HOURS="${FRESH_HOURS:-36}"
@@ -45,7 +48,13 @@ for t in $targets; do
 done
 for t in "${stale[@]+"${stale[@]}"}"; do problems+=("stale:$t"); done
 
-find "$DEST" -type f -mtime +"$KEEP_DAYS" -delete
+# Prune only what this job writes (*.age under daily/weekly/monthly), and never after a failed
+# copy: a broken run must not shrink the mirror.
+if [[ " ${problems[*]+"${problems[*]}"} " != *" copy "* ]]; then
+  for tier in daily weekly monthly; do
+    [ -d "$DEST/$tier" ] && find "$DEST/$tier" -type f -name '*.age' -mtime +"$KEEP_DAYS" -delete
+  done
+fi
 files=$(find "$DEST" -type f | wc -l)
 size=$(du -sm "$DEST" | cut -f1)
 ntargets=$(printf '%s\n' $targets | grep -c . || true)
