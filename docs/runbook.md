@@ -14,16 +14,18 @@ minutes ahead, redeploy, wait for the run, then set it back to `0 19 * * *` and 
 
 ## Restore drill (monthly, automated since 2026-11-18; the `restore-drill` heartbeat alerts after 35 days)
 
-**Automated:** Railway cron service `restore-drill` in `ops-backups` runs
+**Automated:** Railway cron service `restore-drill` in its **own project `ops-restore-drill`** runs
 `/app/scripts/restore-drill-local.sh` on the 1st of every month at 03:00 UTC. It starts a throwaway
 PostgreSQL inside its own container (no separate database service; empty server environment, unix
 socket only, restores as a non-superuser `drill` role with BYPASSRLS so planted SQL cannot run
-`COPY ... TO PROGRAM` or read files), drills **every** target that has
-daily backups in the bucket (new databases are covered automatically), reports the heartbeat and
-removes the scratch server. It reads R2 with the **read-only** mirror token (`MIRROR_R2_*`), so it
-cannot change or delete backups. `AGE_IDENTITY` is a service variable: anyone who can read variables
-in `ops-backups` can already read every live database through `BACKUP_URL_*` (`pg_read_all_data`),
-so the key adds no data they could not see; seal it in the dashboard for defence in depth.
+`COPY ... TO PROGRAM` or read files), drills **every** target that has daily backups in the bucket
+(new databases are covered automatically), reports the heartbeat and removes the scratch server.
+It reads R2 with the **read-only** mirror token (`MIRROR_R2_*`), so it cannot change or delete
+backups. The project holds nothing but this service: `AGE_IDENTITY` is kept apart from `ops-backups`
+(database URLs, R2 write token), because old backups also hold data since deleted and databases of
+other projects, so access to one project must not open the other. `HEARTBEAT_TOKEN` is set directly
+(from Infisical `/monitoring`), not as a reference into `ops-backups`. Seal `AGE_IDENTITY` in the
+dashboard (the API cannot) for defence in depth.
 Run now: set its cron a few minutes ahead and redeploy, then set it back to `0 3 1 * *`.
 A failed target is logged as `FAIL <target>` and the heartbeat alerts at once.
 
