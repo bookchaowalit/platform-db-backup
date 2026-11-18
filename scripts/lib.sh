@@ -70,6 +70,26 @@ strip_pg_preamble_setting() {
        {print}' "$1" >"$1.tmp" && mv "$1.tmp" "$1"
 }
 
+# Neon keeps an internal `pg_attver` entry in column options, and pg_dump writes it out as
+# `ALTER TABLE ONLY t ALTER COLUMN c SET (pg_attver=N);`. Vanilla PostgreSQL rejects the
+# parameter, which made the empire database impossible to restore outside Neon (drill
+# 2026-11-18). Remove the entry, and the statement when nothing else is left; other options
+# stay. COPY data blocks (between `COPY ... FROM stdin;` and `\.`) are never touched.
+strip_neon_column_options() {
+  awk '
+    copy { if ($0 == "\\.") copy = 0; print; next }
+    /^COPY .* FROM stdin;$/ { copy = 1; print; next }
+    /^ALTER TABLE (ONLY )?[^ ]+ ALTER COLUMN [^ ]+ SET \(.*\);$/ && /pg_attver=/ {
+      open = index($0, " SET ("); head = substr($0, 1, open + 5)
+      opts = substr($0, open + 6); sub(/\);$/, "", opts)
+      n = split(opts, parts, /, */); kept = ""
+      for (i = 1; i <= n; i++) if (parts[i] !~ /^pg_attver=/) kept = kept (kept == "" ? "" : ", ") parts[i]
+      if (kept != "") print head kept ");"
+      next
+    }
+    { print }' "$1" >"$1.tmp" && mv "$1.tmp" "$1"
+}
+
 PG_COUNT_SQL="SELECT table_schema || '.' || table_name,
        (xpath('/row/c/text()', query_to_xml(
           format('SELECT count(*) AS c FROM %I.%I', table_schema, table_name), false, true, '')))[1]::text

@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly db-backups mirror, 03:30 Asia/Bangkok
+
+[Timer]
+OnCalendar=*-*-* 20:30:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
