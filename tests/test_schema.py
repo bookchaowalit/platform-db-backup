@@ -34,9 +34,11 @@ class CrossSchemaTests(unittest.TestCase):
         self.assertIn("contype = 'f'", sql)
         self.assertIn("sn.nspname = 'x_intel'", sql)
         self.assertIn("rn.nspname <> 'x_intel'", sql)
+        for part in ("pg_rewrite", "pg_attribute", "pg_inherits"):
+            self.assertIn(part, sql)
 
     def test_the_failure_has_its_own_category(self) -> None:
-        result = bash('f=$(mktemp); echo "cross-schema dependency: 2 foreign keys" >"$f"; classify_dump_error "$f"')
+        result = bash('f=$(mktemp); echo "cross-schema dependency: 2 objects in schema x depend on other schemas" >"$f"; classify_dump_error "$f"')
         self.assertEqual(result.stdout.strip(), "cross-schema dependency (schema dump cannot restore alone)")
 
 

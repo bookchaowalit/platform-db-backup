@@ -101,6 +101,7 @@ strip_neon_column_options() {
     {
       # A line that opens a dollar quote without closing it starts a body.
       line = $0
+      gsub(/\x27([^\x27]|\x27\x27)*\x27/, "", line)   # a $$ inside a string literal opens nothing
       while (match(line, /\$[A-Za-z_]*\$/)) {
         t = substr(line, RSTART, RLENGTH); rest = substr(line, RSTART + RLENGTH)
         if (index(rest, t)) { line = substr(rest, index(rest, t) + length(t)) } else { tag = t; break }
@@ -110,13 +111,34 @@ strip_neon_column_options() {
 }
 
 # A one-schema dump (BACKUP_SCHEMA_<NAME>) restores alone only if nothing in it points outside the
-# schema. Counts foreign keys from the schema to tables in other schemas (e.g. auth.users).
+# schema (pg_catalog and information_schema excepted). Counts, in one query:
+#   foreign keys to tables in other schemas (e.g. auth.users),
+#   views or rules in the schema that read relations of other schemas,
+#   columns whose type lives in another schema (enums, domains, extension types),
+#   partitions or inheritance children that cross the schema boundary (rows the manifest counts
+#   through the parent but pg_dump --schema leaves out).
 pg_cross_schema_fk_sql_for() {
-  printf '%s' "SELECT count(*) FROM pg_constraint c
-  JOIN pg_class s ON s.oid = c.conrelid JOIN pg_namespace sn ON sn.oid = s.relnamespace
-  JOIN pg_class r ON r.oid = c.confrelid JOIN pg_namespace rn ON rn.oid = r.relnamespace
-WHERE c.contype = 'f' AND sn.nspname = '$1' AND rn.nspname <> '$1'"
+  printf '%s' "SELECT
+ (SELECT count(*) FROM pg_constraint c
+   JOIN pg_class s ON s.oid = c.conrelid JOIN pg_namespace sn ON sn.oid = s.relnamespace
+   JOIN pg_class r ON r.oid = c.confrelid JOIN pg_namespace rn ON rn.oid = r.relnamespace
+  WHERE c.contype = 'f' AND sn.nspname = '$1' AND rn.nspname <> '$1')
++(SELECT count(DISTINCT (w.oid, d.refobjid)) FROM pg_rewrite w
+   JOIN pg_class v ON v.oid = w.ev_class JOIN pg_namespace vn ON vn.oid = v.relnamespace
+   JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = w.oid AND d.refclassid = 'pg_class'::regclass
+   JOIN pg_class r ON r.oid = d.refobjid JOIN pg_namespace rn ON rn.oid = r.relnamespace
+  WHERE vn.nspname = '$1' AND rn.nspname NOT IN ('$1', 'pg_catalog', 'information_schema'))
++(SELECT count(*) FROM pg_attribute a
+   JOIN pg_class t ON t.oid = a.attrelid JOIN pg_namespace tn ON tn.oid = t.relnamespace
+   JOIN pg_type y ON y.oid = a.atttypid JOIN pg_namespace yn ON yn.oid = y.typnamespace
+  WHERE tn.nspname = '$1' AND a.attnum > 0 AND NOT a.attisdropped
+    AND yn.nspname NOT IN ('$1', 'pg_catalog', 'information_schema'))
++(SELECT count(*) FROM pg_inherits i
+   JOIN pg_class p ON p.oid = i.inhparent JOIN pg_namespace pn ON pn.oid = p.relnamespace
+   JOIN pg_class k ON k.oid = i.inhrelid JOIN pg_namespace kn ON kn.oid = k.relnamespace
+  WHERE pn.nspname <> kn.nspname AND '$1' IN (pn.nspname, kn.nspname))"
 }
+
 
 PG_COUNT_SQL="SELECT table_schema || '.' || table_name,
        (xpath('/row/c/text()', query_to_xml(
@@ -206,7 +228,7 @@ pg_dump_with_manifest() {
       return 1
     fi
     if [ "$external" != 0 ]; then
-      echo "cross-schema dependency: $external foreign keys leave schema $schema" >>"$err"
+      echo "cross-schema dependency: $external objects in schema $schema depend on other schemas" >>"$err"
       kill "$psql_pid" 2>/dev/null
       stop_coproc "$psql_pid"
       return 65
