@@ -16,7 +16,9 @@ minutes ahead, redeploy, wait for the run, then set it back to `0 19 * * *` and 
 
 **Automated:** Railway cron service `restore-drill` in `ops-backups` runs
 `/app/scripts/restore-drill-local.sh` on the 1st of every month at 03:00 UTC. It starts a throwaway
-PostgreSQL inside its own container (no separate database service), drills **every** target that has
+PostgreSQL inside its own container (no separate database service; empty server environment, unix
+socket only, restores as a non-superuser `drill` role with BYPASSRLS so planted SQL cannot run
+`COPY ... TO PROGRAM` or read files), drills **every** target that has
 daily backups in the bucket (new databases are covered automatically), reports the heartbeat and
 removes the scratch server. It reads R2 with the **read-only** mirror token (`MIRROR_R2_*`), so it
 cannot change or delete backups. `AGE_IDENTITY` is a service variable: anyone who can read variables
