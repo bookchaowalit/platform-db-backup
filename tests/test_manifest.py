@@ -53,5 +53,53 @@ class StripPreambleSettingTests(unittest.TestCase):
             )
 
 
+class StripNeonColumnOptionsTests(unittest.TestCase):
+    """Neon stores pg_attver in column options; vanilla PostgreSQL rejects it on restore."""
+
+    def run_on(self, script: str) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "restore.sql"
+            path.write_text(script, encoding="utf-8")
+            self.assertEqual(bash('strip_neon_column_options "$1"', str(path)).returncode, 0)
+            return path.read_text(encoding="utf-8")
+
+    def test_drops_a_statement_that_only_sets_pg_attver(self) -> None:
+        out = self.run_on(
+            "CREATE TABLE platform.invitations (id uuid);\n"
+            "ALTER TABLE ONLY platform.invitations ALTER COLUMN id SET (pg_attver=235371464);\n"
+            "ALTER TABLE ONLY platform.invitations ADD CONSTRAINT p PRIMARY KEY (id);\n"
+        )
+        self.assertEqual(
+            out,
+            "CREATE TABLE platform.invitations (id uuid);\n"
+            "ALTER TABLE ONLY platform.invitations ADD CONSTRAINT p PRIMARY KEY (id);\n",
+        )
+
+    def test_keeps_the_other_options_of_the_same_column(self) -> None:
+        out = self.run_on(
+            "ALTER TABLE ONLY s.t ALTER COLUMN c SET (n_distinct=-1, pg_attver=7);\n"
+            "ALTER TABLE ONLY s.t ALTER COLUMN d SET (pg_attver=7, n_distinct=5);\n"
+        )
+        self.assertEqual(
+            out,
+            "ALTER TABLE ONLY s.t ALTER COLUMN c SET (n_distinct=-1);\n"
+            "ALTER TABLE ONLY s.t ALTER COLUMN d SET (n_distinct=5);\n",
+        )
+
+    def test_never_touches_copy_data(self) -> None:
+        script = (
+            "COPY s.notes (body) FROM stdin;\n"
+            "ALTER TABLE ONLY x ALTER COLUMN y SET (pg_attver=1);\n"
+            "\\.\n"
+            "ALTER TABLE ONLY s.notes ALTER COLUMN body SET (pg_attver=1);\n"
+        )
+        self.assertEqual(
+            self.run_on(script),
+            "COPY s.notes (body) FROM stdin;\n"
+            "ALTER TABLE ONLY x ALTER COLUMN y SET (pg_attver=1);\n"
+            "\\.\n",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

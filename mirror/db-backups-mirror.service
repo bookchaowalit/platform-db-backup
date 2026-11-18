@@ -1,0 +1,11 @@
+[Unit]
+Description=Second copy of the encrypted database backups (R2 db-backups -> local)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/db-backups-mirror.sh
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=2h

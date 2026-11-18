@@ -33,6 +33,7 @@ case "$object" in
     # apply the script in a single transaction that stops on the first error.
     pg_restore --no-owner --no-privileges --clean --if-exists --file="$work/restore.sql" "$work/backup"
     strip_pg_preamble_setting "$work/restore.sql"
+    strip_neon_column_options "$work/restore.sql"
     # Row-level security policies name roles that live outside the dump; create missing ones.
     ensure_policy_roles "$work/backup" "$target_url" "$work"
     psql --dbname="$target_url" --no-psqlrc --set ON_ERROR_STOP=1 --single-transaction \

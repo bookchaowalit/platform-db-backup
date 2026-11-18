@@ -105,6 +105,7 @@ for target in "${targets[@]}"; do
         owned_pg+=("$scratch_db")
         pg_restore --no-owner --no-privileges --file="$work/restore.sql" "$work/backup" 2>>"$work/restore.err" \
           && strip_pg_preamble_setting "$work/restore.sql" \
+          && strip_neon_column_options "$work/restore.sql" \
           && ensure_policy_roles "$work/backup" "$scratch" "$work" >/dev/null 2>>"$work/restore.err" \
           && psql --dbname="$scratch" --no-psqlrc --set ON_ERROR_STOP=1 --single-transaction --quiet \
                --file="$work/restore.sql" >/dev/null 2>>"$work/restore.err" \

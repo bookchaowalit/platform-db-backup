@@ -36,9 +36,62 @@ database. Missing roles named by row-level security policies are created as NOLO
 3. **Delete all three services right away.** `restore-drill` holds the decryption key.
 4. Record the result (date, targets, objects, tables, rows, durations) in the operations log.
 
+Drill 2026-11-18 15:18 UTC, all 44 targets: 43 matched their manifests (largest: x-intel 18 tables /
+25,670 rows, income-pipeline 27 / 24,543, knowledge 3 / 6,533; 1–5 s each). **empire failed**: the
+Neon dump carries `ALTER COLUMN … SET (pg_attver=N)` (Neon-internal column option, from the
+2026-11-13 tenancy tables) that vanilla PostgreSQL rejects, so empire could not be restored outside
+Neon. Fixed by `strip_neon_column_options` (lib.sh, used by both restore paths); empire then
+restored: 34 tables / 150,474 rows match.
+
 First drill, 2026-10-18 06:12 UTC: empire 32 tables / 71,613 rows (3 s), ev3 129 / 1,544 (4 s),
 tma 74 / 1,438 (11 s). All matched the manifests. The previous run had found the missing
 policy roles.
+
+## Second copy (3-2-1, since 2026-11-18)
+
+R2 `db-backups` is the first copy. The homelab file server host `beelink` (192.168.152.10, tailnet
+`beelink`) keeps a second copy on its own disk, so losing the Cloudflare account or the bucket
+does not lose the backups.
+
+- `/usr/local/bin/db-backups-mirror.sh`, run by `db-backups-mirror.timer` daily at 20:30 UTC
+  (03:30 Bangkok, after the 19:00 UTC backup). Copies into `/var/lib/db-backups-mirror` (0700).
+- **Read-only** bucket-scoped R2 token (Cloudflare token `db-backups-mirror-readonly (beelink)`,
+  Infisical `/db-backup` `MIRROR_R2_*`): the host can read, never write or delete, the bucket.
+- **Copy, never sync**: objects removed from R2 (retention, or a wipe) stay in the mirror. Local
+  files older than 400 days are pruned by the script.
+- Objects stay **age-encrypted**. The host has no `AGE_IDENTITY`; the key never goes there.
+- After the copy, `rclone check --one-way` confirms every bucket object is in the mirror with the
+  same hash. Freshness is checked against a target list that does not come from the bucket alone:
+  bucket `daily/` prefixes + every target the mirror has ever held + `/etc/db-backups-mirror/expected`,
+  minus `/etc/db-backups-mirror/retired`. Each must have a manifest newer than 36 h, so a prefix
+  deleted from R2 still shows up as `stale:<target>`. **Add a new backup target to `expected`;
+  retire one by adding it to `retired`.**
+- Heartbeat `db-backup-mirror` (26 h). `ok:false` names the failed step: `copy`, `check`, `list`
+  or `stale:<targets>`. Logs: `journalctl -u db-backups-mirror.service`.
+- Env file `/etc/db-backups-mirror/env` (0600) holds the token and `HEARTBEAT_TOKEN`; rebuild it
+  from Infisical when either rotates. Run now: `systemctl start db-backups-mirror.service`.
+- Source of truth for the script and units: `mirror/` in this repository (CI shellchecks it).
+  Install: copy `mirror/db-backups-mirror.sh` to `/usr/local/bin/`, the two units to
+  `/etc/systemd/system/`, then `systemctl daemon-reload && systemctl enable --now db-backups-mirror.timer`.
+
+### Restore from the mirror when R2 is unavailable
+
+Both `restore.sh` and `restore-drill.sh` read through the rclone remote `r2:`. Point that remote
+at a local copy of the mirror (rclone `alias`) and they run unchanged, without R2:
+
+1. On a disposable machine or container that will hold the key (never the mirror host), copy the
+   objects you need from `beelink:/var/lib/db-backups-mirror/` into `<dir>/db-backups/`, keeping
+   the `daily/<target>/` layout. For a drill, copy the newest `*.manifest.tsv.age` of each target
+   and the `.age` dump with the same name stem.
+2. Set `RCLONE_CONFIG_R2_TYPE=alias`, `RCLONE_CONFIG_R2_REMOTE=<dir>`, `BACKUP_BUCKET=db-backups`
+   (so `r2:db-backups/daily/...` resolves to `<dir>/db-backups/daily/...`), plus `AGE_IDENTITY`
+   (drill) or `AGE_IDENTITY_FILE` (restore) from Infisical `/db-backup`.
+3. Prove the copy first with `restore-drill.sh` into a scratch PostgreSQL, then run `restore.sh`.
+
+Verified 2026-11-18 with the backup image in Docker and a scratch `postgres:18.0`: habits,
+platform-security and empire restored from the mirror copy and matched their manifests.
+
+First run 2026-11-18 15:07 UTC: 44 targets, 1,640 objects, 856 MB, check passed.
 
 ## Rotating credentials
 
