@@ -127,7 +127,8 @@ strip_neon_column_options() {
 # A one-schema dump (BACKUP_SCHEMA_<NAME>) restores alone only if nothing in it points outside the
 # schema (pg_catalog and information_schema excepted). Counts, in one query:
 #   foreign keys to tables in other schemas (e.g. auth.users),
-#   views or rules in the schema that read relations of other schemas,
+#   views or rules in the schema that read relations or call functions of other schemas,
+#   extensions installed into the schema (pg_dump --schema leaves CREATE EXTENSION out),
 #   columns whose type lives in another schema (enums, domains, extension types),
 #   column defaults calling functions or sequences of other schemas (nextval('other.seq')),
 #   row-level security policies calling functions or reading tables of other schemas (auth.uid()),
@@ -142,9 +143,13 @@ pg_cross_schema_fk_sql_for() {
   WHERE c.contype = 'f' AND sn.nspname = '$1' AND rn.nspname <> '$1')
 +(SELECT count(DISTINCT (w.oid, d.refobjid)) FROM pg_rewrite w
    JOIN pg_class v ON v.oid = w.ev_class JOIN pg_namespace vn ON vn.oid = v.relnamespace
-   JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = w.oid AND d.refclassid = 'pg_class'::regclass
-   JOIN pg_class r ON r.oid = d.refobjid JOIN pg_namespace rn ON rn.oid = r.relnamespace
+   JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = w.oid
+   LEFT JOIN pg_proc fp ON d.refclassid = 'pg_proc'::regclass AND fp.oid = d.refobjid
+   LEFT JOIN pg_class rc ON d.refclassid = 'pg_class'::regclass AND rc.oid = d.refobjid
+   JOIN pg_namespace rn ON rn.oid = coalesce(fp.pronamespace, rc.relnamespace)
   WHERE vn.nspname = '$1' AND rn.nspname NOT IN ('$1', 'pg_catalog', 'information_schema'))
++(SELECT count(*) FROM pg_extension e JOIN pg_namespace en ON en.oid = e.extnamespace
+  WHERE en.nspname = '$1')
 +(SELECT count(*) FROM pg_attribute a
    JOIN pg_class t ON t.oid = a.attrelid JOIN pg_namespace tn ON tn.oid = t.relnamespace
    JOIN pg_type y ON y.oid = a.atttypid JOIN pg_namespace yn ON yn.oid = y.typnamespace

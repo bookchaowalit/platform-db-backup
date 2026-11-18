@@ -46,7 +46,8 @@ services were deleted at once.
 
 One-schema targets (`BACKUP_SCHEMA_<NAME>`) now fail the nightly backup with the category
 `cross-schema dependency` when anything in the schema depends on another schema — a foreign key,
-a view or rule reading another schema, a column type from another schema, or a partition or
+a view or rule reading another schema or calling its functions, an extension installed in the
+schema, a column type from another schema, or a partition or
 inheritance child across the boundary (such a dump cannot restore alone, or its manifest counts
 rows the dump lacks);
 x-intel restored cleanly in both drills and the check counts 0 for it (2026-11-18).
@@ -69,12 +70,12 @@ does not lose the backups.
   mirror, and `--immutable` refuses to replace a mirrored object whose R2 copy changed (backup
   objects are never rewritten, so a change is damage or tampering): the run fails `copy` and the
   mirror keeps its copy. The script prunes only its own `*.age` files under `daily/`, `weekly/`, `monthly/` older
-  than 400 days, and never after a failed copy.
+  than 400 days that R2 no longer holds, and never after a failed copy or bucket listing.
 - Objects stay **age-encrypted**. The host has no `AGE_IDENTITY`; the key never goes there.
 - After the copy, `rclone check --one-way` confirms every bucket object is in the mirror with the
   same MD5 (a size-only comparison, "hashes could not be checked", fails as `check-hash`). Freshness is checked against a target list that does not come from the bucket alone:
   bucket `daily/` prefixes + every target the mirror has ever held + `/etc/db-backups-mirror/expected`,
-  minus `/etc/db-backups-mirror/retired`. Each must have a manifest newer than 36 h **and** the dump
+  minus `/etc/db-backups-mirror/retired` (an unreadable list fails as `list-unreadable`). Each must have a manifest newer than 36 h **and** the dump
   with the same name stem beside it (the pair `restore-drill.sh` picks), so a prefix deleted from R2
   or a lost dump still shows up as `stale:<target>`. **Add a new backup target to `expected`;
   retire one by adding it to `retired`.**
