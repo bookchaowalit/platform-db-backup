@@ -41,7 +41,12 @@ Drill 2026-11-18 15:18 UTC, all 44 targets: 43 matched their manifests (largest:
 Neon dump carries `ALTER COLUMN … SET (pg_attver=N)` (Neon-internal column option, from the
 2026-11-13 tenancy tables) that vanilla PostgreSQL rejects, so empire could not be restored outside
 Neon. Fixed by `strip_neon_column_options` (lib.sh, used by both restore paths); empire then
-restored: 34 tables / 150,474 rows match.
+restored: 34 tables / 150,474 rows match. Rerun 15:35 UTC with the fix: **44/44 passed**; the drill
+services were deleted at once.
+
+One-schema targets (`BACKUP_SCHEMA_<NAME>`) now fail the nightly backup with the category
+`cross-schema dependency` when a foreign key leaves the schema (such a dump cannot restore alone);
+x-intel restored cleanly in both drills, so it has none today.
 
 First drill, 2026-10-18 06:12 UTC: empire 32 tables / 71,613 rows (3 s), ev3 129 / 1,544 (4 s),
 tma 74 / 1,438 (11 s). All matched the manifests. The previous run had found the missing
@@ -57,14 +62,17 @@ does not lose the backups.
   (03:30 Bangkok, after the 19:00 UTC backup). Copies into `/var/lib/db-backups-mirror` (0700).
 - **Read-only** bucket-scoped R2 token (Cloudflare token `db-backups-mirror-readonly (beelink)`,
   Infisical `/db-backup` `MIRROR_R2_*`): the host can read, never write or delete, the bucket.
-- **Copy, never sync**: objects removed from R2 (retention, or a wipe) stay in the mirror. Local
-  files older than 400 days are pruned by the script.
+- **Copy, never sync, never overwrite**: objects removed from R2 (retention, or a wipe) stay in the
+  mirror, and `--immutable` refuses to replace a mirrored object whose R2 copy changed (backup
+  objects are never rewritten, so a change is damage or tampering): the run fails `copy` and the
+  mirror keeps its copy. Local files older than 400 days are pruned by the script.
 - Objects stay **age-encrypted**. The host has no `AGE_IDENTITY`; the key never goes there.
 - After the copy, `rclone check --one-way` confirms every bucket object is in the mirror with the
   same hash. Freshness is checked against a target list that does not come from the bucket alone:
   bucket `daily/` prefixes + every target the mirror has ever held + `/etc/db-backups-mirror/expected`,
-  minus `/etc/db-backups-mirror/retired`. Each must have a manifest newer than 36 h, so a prefix
-  deleted from R2 still shows up as `stale:<target>`. **Add a new backup target to `expected`;
+  minus `/etc/db-backups-mirror/retired`. Each must have a manifest newer than 36 h **and** the dump
+  with the same name stem beside it (the pair `restore-drill.sh` picks), so a prefix deleted from R2
+  or a lost dump still shows up as `stale:<target>`. **Add a new backup target to `expected`;
   retire one by adding it to `retired`.**
 - Heartbeat `db-backup-mirror` (26 h). `ok:false` names the failed step: `copy`, `check`, `list`
   or `stale:<targets>`. Logs: `journalctl -u db-backups-mirror.service`.

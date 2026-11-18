@@ -8,7 +8,7 @@
 # exists only on the mirror host (SC1091).
 # shellcheck disable=SC1091,SC2086
 set -uo pipefail
-set -a; . /etc/db-backups-mirror/env; set +a
+set -a; . "${MIRROR_ENV_FILE:-/etc/db-backups-mirror/env}"; set +a
 DEST="${DEST:-/var/lib/db-backups-mirror}"
 KEEP_DAYS="${KEEP_DAYS:-400}"
 FRESH_HOURS="${FRESH_HOURS:-36}"
@@ -16,7 +16,9 @@ log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 problems=()
 mkdir -p "$DEST" && chmod 700 "$DEST"
 
-if ! rclone copy r2:db-backups "$DEST" --s3-no-check-bucket --transfers 4 --log-level NOTICE; then
+# --immutable: backup objects are never rewritten (each run writes new names), so a changed
+# source object is damage or tampering. rclone keeps the mirror copy and fails the copy instead.
+if ! rclone copy r2:db-backups "$DEST" --immutable --s3-no-check-bucket --transfers 4 --log-level NOTICE; then
   problems+=("copy")
 fi
 if ! rclone check r2:db-backups "$DEST" --one-way --s3-no-check-bucket --log-level ERROR; then
@@ -33,22 +35,28 @@ held=$(find "$DEST/daily" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/
 expected=$(grep -v '^#' /etc/db-backups-mirror/expected 2>/dev/null)
 retired=$(grep -v '^#' /etc/db-backups-mirror/retired 2>/dev/null)
 targets=$(printf '%s\n' $bucket $held $expected | grep . | sort -u | grep -vxF -f <(printf '%s\n' $retired | grep . || echo '#none') || true)
+# The newest manifest must be fresh AND have its dump (same name stem) beside it: that pair is
+# exactly what restore-drill.sh picks.
 for t in $targets; do
-  if [ -z "$(find "$DEST/daily/$t" -name '*.manifest.tsv.age' -mmin -$((FRESH_HOURS * 60)) 2>/dev/null | head -n 1)" ]; then
+  newest=$(find "$DEST/daily/$t" -name '*.manifest.tsv.age' -mmin -$((FRESH_HOURS * 60)) 2>/dev/null | sort | tail -n 1)
+  if [ -z "$newest" ] || [ ! -s "${newest%.manifest.tsv.age}.age" ]; then
     stale+=("$t")
   fi
 done
-[ "${#stale[@]}" -eq 0 ] || problems+=("stale:${stale[*]}")
+for t in "${stale[@]+"${stale[@]}"}"; do problems+=("stale:$t"); done
 
 find "$DEST" -type f -mtime +"$KEEP_DAYS" -delete
 files=$(find "$DEST" -type f | wc -l)
 size=$(du -sm "$DEST" | cut -f1)
 ntargets=$(printf '%s\n' $targets | grep -c . || true)
 
-if [ "${#problems[@]}" -eq 0 ]; then ok=true; detail="targets=$ntargets files=$files size_mb=$size"
-else ok=false; detail="failed: ${problems[*]} (files=$files)"; fi
-detail="${detail:0:300}"
-log "ok=$ok $detail"
+# The monitor names and de-duplicates failures by the `failed` array (same contract as backup.sh):
+# a different list alerts again. Entries are step names and target names, [a-z0-9:-] only.
+failed_json=""
+for p in "${problems[@]+"${problems[@]}"}"; do failed_json="$failed_json${failed_json:+,}\"${p//[^a-z0-9:-]/}\""; done
+if [ "${#problems[@]}" -eq 0 ]; then ok=true; else ok=false; fi
+log "ok=$ok targets=$ntargets files=$files size_mb=$size failed=[${problems[*]+"${problems[*]}"}]"
 curl -fsS --max-time 20 -X POST -H "Authorization: Bearer $HEARTBEAT_TOKEN" -H 'Content-Type: application/json' \
-  --data "{\"ok\":$ok,\"detail\":\"${detail//\"/}\"}" "$HEARTBEAT_URL" >/dev/null || log "heartbeat failed"
+  --data "{\"ok\":$ok,\"failed\":[$failed_json],\"targets\":$ntargets,\"files\":$files,\"size_mb\":$size}" \
+  "$HEARTBEAT_URL" >/dev/null || log "heartbeat failed"
 [ "$ok" = true ]

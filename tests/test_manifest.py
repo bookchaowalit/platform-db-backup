@@ -86,6 +86,27 @@ class StripNeonColumnOptionsTests(unittest.TestCase):
             "ALTER TABLE ONLY s.t ALTER COLUMN d SET (n_distinct=5);\n",
         )
 
+    def test_handles_quoted_identifiers_with_spaces(self) -> None:
+        out = self.run_on(
+            'ALTER TABLE ONLY s."Order Items" ALTER COLUMN "Unit Price" SET (pg_attver=9);\n'
+            'ALTER TABLE ONLY "a b"."c ""d""" ALTER COLUMN "x SET (y" SET (n_distinct=2, pg_attver=9);\n'
+        )
+        self.assertEqual(out, 'ALTER TABLE ONLY "a b"."c ""d""" ALTER COLUMN "x SET (y" SET (n_distinct=2);\n')
+
+    def test_never_touches_a_dollar_quoted_routine_body(self) -> None:
+        script = (
+            "CREATE FUNCTION s.f() RETURNS void LANGUAGE sql AS $_$\n"
+            "ALTER TABLE ONLY s.t ALTER COLUMN c SET (pg_attver=1);\n"
+            "$_$;\n"
+            "ALTER TABLE ONLY s.t ALTER COLUMN c SET (pg_attver=1);\n"
+        )
+        self.assertEqual(
+            self.run_on(script),
+            "CREATE FUNCTION s.f() RETURNS void LANGUAGE sql AS $_$\n"
+            "ALTER TABLE ONLY s.t ALTER COLUMN c SET (pg_attver=1);\n"
+            "$_$;\n",
+        )
+
     def test_never_touches_copy_data(self) -> None:
         script = (
             "COPY s.notes (body) FROM stdin;\n"
