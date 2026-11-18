@@ -34,7 +34,7 @@ class CrossSchemaTests(unittest.TestCase):
         self.assertIn("contype = 'f'", sql)
         self.assertIn("sn.nspname = 'x_intel'", sql)
         self.assertIn("rn.nspname <> 'x_intel'", sql)
-        for part in ("pg_rewrite", "pg_attribute", "pg_inherits"):
+        for part in ("pg_rewrite", "pg_attribute", "pg_attrdef", "pg_inherits"):
             self.assertIn(part, sql)
 
     def test_the_failure_has_its_own_category(self) -> None:

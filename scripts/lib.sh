@@ -129,6 +129,7 @@ strip_neon_column_options() {
 #   foreign keys to tables in other schemas (e.g. auth.users),
 #   views or rules in the schema that read relations of other schemas,
 #   columns whose type lives in another schema (enums, domains, extension types),
+#   column defaults calling functions or sequences of other schemas (nextval('other.seq')),
 #   partitions or inheritance children that cross the schema boundary (rows the manifest counts
 #   through the parent but pg_dump --schema leaves out).
 pg_cross_schema_fk_sql_for() {
@@ -147,6 +148,13 @@ pg_cross_schema_fk_sql_for() {
    JOIN pg_type y ON y.oid = a.atttypid JOIN pg_namespace yn ON yn.oid = y.typnamespace
   WHERE tn.nspname = '$1' AND a.attnum > 0 AND NOT a.attisdropped
     AND yn.nspname NOT IN ('$1', 'pg_catalog', 'information_schema'))
++(SELECT count(DISTINCT (d.objid, d.refobjid)) FROM pg_attrdef ad
+   JOIN pg_class t ON t.oid = ad.adrelid JOIN pg_namespace tn ON tn.oid = t.relnamespace
+   JOIN pg_depend d ON d.classid = 'pg_attrdef'::regclass AND d.objid = ad.oid
+   LEFT JOIN pg_proc fp ON d.refclassid = 'pg_proc'::regclass AND fp.oid = d.refobjid
+   LEFT JOIN pg_class rc ON d.refclassid = 'pg_class'::regclass AND rc.oid = d.refobjid
+   JOIN pg_namespace rn ON rn.oid = coalesce(fp.pronamespace, rc.relnamespace)
+  WHERE tn.nspname = '$1' AND rn.nspname NOT IN ('$1', 'pg_catalog', 'information_schema'))
 +(SELECT count(*) FROM pg_inherits i
    JOIN pg_class p ON p.oid = i.inhparent JOIN pg_namespace pn ON pn.oid = p.relnamespace
    JOIN pg_class k ON k.oid = i.inhrelid JOIN pg_namespace kn ON kn.oid = k.relnamespace

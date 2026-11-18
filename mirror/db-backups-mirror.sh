@@ -41,8 +41,10 @@ targets=$(printf '%s\n' $bucket $held $expected | grep . | sort -u | grep -vxF -
 # The newest manifest must be fresh AND have its dump (same name stem) beside it: that pair is
 # exactly what restore-drill.sh picks.
 for t in $targets; do
-  newest=$(find "$DEST/daily/$t" -name '*.manifest.tsv.age' -mmin -$((FRESH_HOURS * 60)) 2>/dev/null | sort | tail -n 1)
-  if [ -z "$newest" ] || [ ! -s "${newest%.manifest.tsv.age}.age" ]; then
+  # Same pick as restore-drill.sh: the newest manifest by name, which must itself be fresh.
+  newest=$(find "$DEST/daily/$t" -name '*.manifest.tsv.age' 2>/dev/null | sort | tail -n 1)
+  if [ -z "$newest" ] || [ -z "$(find "$newest" -mmin -$((FRESH_HOURS * 60)))" ] \
+    || [ ! -s "${newest%.manifest.tsv.age}.age" ]; then
     stale+=("$t")
   fi
 done
