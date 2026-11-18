@@ -41,8 +41,14 @@ stale=()
 bucket=$(rclone lsf --dirs-only r2:db-backups/daily/ 2>/dev/null | tr -d '/')
 [ -n "$bucket" ] || problems+=("list")
 held=$(find "$DEST/daily" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null)
-expected=$(grep -v '^#' /etc/db-backups-mirror/expected 2>/dev/null)
-retired=$(grep -v '^#' /etc/db-backups-mirror/retired 2>/dev/null)
+EXPECTED_FILE="${EXPECTED_FILE:-/etc/db-backups-mirror/expected}"
+RETIRED_FILE="${RETIRED_FILE:-/etc/db-backups-mirror/retired}"
+# A list that exists but cannot be read is a failure, not an empty list.
+for f in "$EXPECTED_FILE" "$RETIRED_FILE"; do
+  if [ -e "$f" ] && [ ! -r "$f" ]; then problems+=("list-unreadable"); fi
+done
+expected=$(grep -v '^#' "$EXPECTED_FILE" 2>/dev/null)
+retired=$(grep -v '^#' "$RETIRED_FILE" 2>/dev/null)
 targets=$(printf '%s\n' $bucket $held $expected | grep . | sort -u | grep -vxF -f <(printf '%s\n' $retired | grep . || echo '#none') || true)
 # The newest manifest must be fresh AND have its dump (same name stem) beside it: that pair is
 # exactly what restore-drill.sh picks.
@@ -57,10 +63,16 @@ done
 for t in "${stale[@]+"${stale[@]}"}"; do problems+=("stale:$t"); done
 
 # Prune only what this job writes (*.age under daily/weekly/monthly), and never after a failed
-# copy: a broken run must not shrink the mirror.
-if [[ " ${problems[*]+"${problems[*]}"} " != *" copy "* ]]; then
+# copy or a failed bucket listing: a broken run must not shrink the mirror.
+# Also never prune a file R2 still holds: it would only be copied back the next night.
+if [[ " ${problems[*]+"${problems[*]}"} " != *" copy "* ]] \
+  && remote="$(rclone lsf -R --files-only r2:db-backups 2>/dev/null)" && [ -n "$remote" ]; then
   for tier in daily weekly monthly; do
-    [ -d "$DEST/$tier" ] && find "$DEST/$tier" -type f -name '*.age' -mtime +"$KEEP_DAYS" -delete
+    [ -d "$DEST/$tier" ] || continue
+    while IFS= read -r old; do
+      rel="${old#"$DEST"/}"
+      grep -qxF -- "$rel" <<<"$remote" || rm -f -- "$old"
+    done < <(find "$DEST/$tier" -type f -name '*.age' -mtime +"$KEEP_DAYS")
   done
 fi
 files=$(find "$DEST" -type f | wc -l)
