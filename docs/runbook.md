@@ -84,7 +84,13 @@ does not lose the backups.
   from Infisical when either rotates. Run now: `systemctl start db-backups-mirror.service`.
 - Source of truth for the script and units: `mirror/` in this repository (CI shellchecks it).
   Install: copy `mirror/db-backups-mirror.sh` to `/usr/local/bin/`, the two units to
-  `/etc/systemd/system/`, then `systemctl daemon-reload && systemctl enable --now db-backups-mirror.timer`.
+  `/etc/systemd/system/`, write `/etc/db-backups-mirror/env` (0600) with
+  `RCLONE_CONFIG_R2_TYPE=s3`, `RCLONE_CONFIG_R2_PROVIDER=Cloudflare`,
+  `RCLONE_CONFIG_R2_ACCESS_KEY_ID` / `RCLONE_CONFIG_R2_SECRET_ACCESS_KEY` / `RCLONE_CONFIG_R2_ENDPOINT`
+  (from Infisical `/db-backup` `MIRROR_R2_*`), `HEARTBEAT_TOKEN` (Infisical `/monitoring`) and
+  `HEARTBEAT_URL=https://monitor.bookchaowalit.com/heartbeat/db-backup-mirror`, create
+  `/etc/db-backups-mirror/expected` (one target per line) and `retired`, then
+  `systemctl daemon-reload && systemctl enable --now db-backups-mirror.timer`.
 
 ### Restore from the mirror when R2 is unavailable
 
