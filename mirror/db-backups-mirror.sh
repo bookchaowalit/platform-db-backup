@@ -38,8 +38,13 @@ fi
 # that stops being backed up) still shows up as stale: bucket daily/ dirs + every target this
 # mirror has ever held + /etc/db-backups-mirror/expected, minus /etc/db-backups-mirror/retired.
 stale=()
-bucket=$(rclone lsf --dirs-only r2:db-backups/daily/ 2>/dev/null | tr -d '/')
-[ -n "$bucket" ] || problems+=("list")
+# A listing that fails part-way can still print some names: judge it by its exit status.
+if bucket_raw="$(rclone lsf --dirs-only r2:db-backups/daily/ 2>/dev/null)" && [ -n "$bucket_raw" ]; then
+  bucket="${bucket_raw//\//}"
+else
+  bucket=""
+  problems+=("list")
+fi
 held=$(find "$DEST/daily" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null)
 EXPECTED_FILE="${EXPECTED_FILE:-/etc/db-backups-mirror/expected}"
 RETIRED_FILE="${RETIRED_FILE:-/etc/db-backups-mirror/retired}"
@@ -65,7 +70,7 @@ for t in "${stale[@]+"${stale[@]}"}"; do problems+=("stale:$t"); done
 # Prune only what this job writes (*.age under daily/weekly/monthly), and never after a failed
 # copy or a failed bucket listing: a broken run must not shrink the mirror.
 # Also never prune a file R2 still holds: it would only be copied back the next night.
-if [[ " ${problems[*]+"${problems[*]}"} " != *" copy "* ]] \
+if [[ " ${problems[*]+"${problems[*]}"} " != *" copy "* && " ${problems[*]+"${problems[*]}"} " != *" list "* ]] \
   && remote="$(rclone lsf -R --files-only r2:db-backups 2>/dev/null)" && [ -n "$remote" ]; then
   for tier in daily weekly monthly; do
     [ -d "$DEST/$tier" ] || continue

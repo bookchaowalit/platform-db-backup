@@ -34,7 +34,17 @@ env -i PATH="$PATH" psql --host="$scratch" --username=bootstrap --dbname=postgre
 export DRILL_PG_ADMIN_URL="postgresql://drill@/postgres?host=$scratch"
 
 if [ -z "${DRILL_TARGETS:-}" ]; then
-  DRILL_TARGETS="$(rclone lsf --dirs-only "r2:$BACKUP_BUCKET/daily/" 2>/dev/null | tr -d '/' | tr '\n' ' ')"
+  if ! listing="$(rclone lsf --dirs-only "r2:$BACKUP_BUCKET/daily/" 2>/dev/null)" || [ -z "$listing" ]; then
+    # Report it now instead of waiting for the 35-day staleness alert.
+    echo "FAIL target discovery: could not list r2:$BACKUP_BUCKET/daily/" >&2
+    if [ -n "${HEARTBEAT_URL:-}" ]; then
+      curl --silent --fail --max-time 20 --retry 3 -H "Authorization: Bearer ${HEARTBEAT_TOKEN:-}" \
+        -H 'Content-Type: application/json' --data '{"job":"restore-drill","ok":false,"failed":["target-discovery"]}' \
+        "$HEARTBEAT_URL" >/dev/null 2>&1 || true
+    fi
+    exit 1
+  fi
+  DRILL_TARGETS="$(printf '%s' "$listing" | tr -d '/' | tr '\n' ' ')"
   export DRILL_TARGETS
 fi
 # Not exec: the trap must stop the scratch server after the drill reports its heartbeat.
