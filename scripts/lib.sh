@@ -75,22 +75,45 @@ strip_pg_preamble_setting() {
 # `ALTER TABLE ONLY t ALTER COLUMN c SET (pg_attver=N);`. Vanilla PostgreSQL rejects the
 # parameter, which made the empire database impossible to restore outside Neon (drill
 # 2026-11-18). Remove the entry, and the statement when nothing else is left; other options
-# stay. Only top-level statements are edited: COPY data blocks (`COPY ... FROM stdin;` to `\.`)
-# and dollar-quoted bodies (`$tag$ ... $tag$`, how pg_dump writes routines) pass unchanged.
+# stay. Only top-level statements are edited: COPY data blocks (`COPY ... FROM stdin;` to `\.`),
+# dollar-quoted bodies (`$tag$ ... $tag$`) and single-quoted literals spanning lines (multi-line
+# COMMENT text) pass unchanged; `--` comments and `''` escapes are honoured.
 # Identifiers may be double-quoted (spaces, doubled quotes) as pg_dump writes them.
 strip_neon_column_options() {
   awk '
     BEGIN {
       id = "(\"([^\"]|\"\")+\"|[^ .\"]+)"
       stmt = "^ALTER TABLE (ONLY )?" id "(\\." id ")? ALTER COLUMN " id " SET \\([^()]*\\);$"
+      q = sprintf("%c", 39)
+    }
+    # Track lexical state across lines: inside a single-quoted literal (inq) or a dollar-quoted
+    # body (tag). Only a line that starts outside both is a top-level statement.
+    function scan(line,    i, n, c, rest, pos) {
+      i = 1; n = length(line)
+      while (i <= n) {
+        if (tag != "") {
+          pos = index(substr(line, i), tag)
+          if (!pos) return
+          i += pos - 1 + length(tag); tag = ""; continue
+        }
+        c = substr(line, i, 1)
+        if (inq) {
+          if (c == q) { if (substr(line, i + 1, 1) == q) i += 2; else { inq = 0; i++ } } else i++
+          continue
+        }
+        if (c == q) { inq = 1; i++; continue }
+        if (c == "\"") { pos = index(substr(line, i + 1), "\""); if (!pos) return; i += pos + 1; continue }
+        if (c == "-" && substr(line, i + 1, 1) == "-") return
+        if (c == "$") {
+          rest = substr(line, i)
+          if (match(rest, /^\$[A-Za-z_][A-Za-z_0-9]*\$|^\$\$/)) { tag = substr(rest, 1, RLENGTH); i += RLENGTH; continue }
+        }
+        i++
+      }
     }
     copy { if ($0 == "\\.") copy = 0; print; next }
-    tag != "" {
-      if (index($0, tag)) tag = ""
-      print; next
-    }
-    /^COPY .* FROM stdin;$/ { copy = 1; print; next }
-    $0 ~ stmt && /pg_attver=/ {
+    !inq && tag == "" && /^COPY .* FROM stdin;$/ { copy = 1; print; next }
+    !inq && tag == "" && $0 ~ stmt && /pg_attver=/ {
       match($0, / SET \([^()]*\);$/)
       head = substr($0, 1, RSTART + 5); opts = substr($0, RSTART + 6); sub(/\);$/, "", opts)
       n = split(opts, parts, /, */); kept = ""
@@ -98,16 +121,7 @@ strip_neon_column_options() {
       if (kept != "") print head kept ");"
       next
     }
-    {
-      # A line that opens a dollar quote without closing it starts a body.
-      line = $0
-      gsub(/\x27([^\x27]|\x27\x27)*\x27/, "", line)   # a $$ inside a string literal opens nothing
-      while (match(line, /\$[A-Za-z_]*\$/)) {
-        t = substr(line, RSTART, RLENGTH); rest = substr(line, RSTART + RLENGTH)
-        if (index(rest, t)) { line = substr(rest, index(rest, t) + length(t)) } else { tag = t; break }
-      }
-      print
-    }' "$1" >"$1.tmp" && mv "$1.tmp" "$1"
+    { scan($0); print }' "$1" >"$1.tmp" && mv "$1.tmp" "$1"
 }
 
 # A one-schema dump (BACKUP_SCHEMA_<NAME>) restores alone only if nothing in it points outside the

@@ -114,6 +114,37 @@ class StripNeonColumnOptionsTests(unittest.TestCase):
         )
         self.assertEqual(out, "CREATE TABLE s.t (c text DEFAULT \'$$\'::text);\n")
 
+    def test_never_touches_a_line_inside_a_multi_line_string_literal(self) -> None:
+        script = (
+            "COMMENT ON TABLE s.t IS \'how to fix:\n"
+            "ALTER TABLE ONLY s.t ALTER COLUMN c SET (pg_attver=1);\n"
+            "it\'\'s $$ fine\';\n"
+            "ALTER TABLE ONLY s.t ALTER COLUMN c SET (pg_attver=1);\n"
+        )
+        self.assertEqual(
+            self.run_on(script),
+            "COMMENT ON TABLE s.t IS \'how to fix:\n"
+            "ALTER TABLE ONLY s.t ALTER COLUMN c SET (pg_attver=1);\n"
+            "it\'\'s $$ fine\';\n",
+        )
+
+    def test_a_quote_inside_a_dollar_body_does_not_open_a_literal(self) -> None:
+        script = (
+            "CREATE FUNCTION f() RETURNS text LANGUAGE sql AS $$ SELECT \'it\'\'s\' $$;\n"
+            "ALTER TABLE ONLY s.t ALTER COLUMN c SET (pg_attver=1);\n"
+        )
+        self.assertEqual(
+            self.run_on(script),
+            "CREATE FUNCTION f() RETURNS text LANGUAGE sql AS $$ SELECT \'it\'\'s\' $$;\n",
+        )
+
+    def test_a_quote_inside_a_quoted_identifier_opens_no_literal(self) -> None:
+        out = self.run_on(
+            'CREATE TABLE s."it\'s" (c text);\n'
+            'ALTER TABLE ONLY s."it\'s" ALTER COLUMN c SET (pg_attver=1);\n'
+        )
+        self.assertEqual(out, 'CREATE TABLE s."it\'s" (c text);\n')
+
     def test_never_touches_copy_data(self) -> None:
         script = (
             "COPY s.notes (body) FROM stdin;\n"
