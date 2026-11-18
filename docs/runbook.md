@@ -12,7 +12,21 @@
 Railway cron services have no "run now" button. Set the cron schedule to a minute a few
 minutes ahead, redeploy, wait for the run, then set it back to `0 19 * * *` and redeploy.
 
-## Restore drill (monthly; the monitor's `restore-drill` heartbeat alerts after 35 days)
+## Restore drill (monthly, automated since 2026-11-18; the `restore-drill` heartbeat alerts after 35 days)
+
+**Automated:** Railway cron service `restore-drill` in `ops-backups` runs
+`/app/scripts/restore-drill-local.sh` on the 1st of every month at 03:00 UTC. It starts a throwaway
+PostgreSQL inside its own container (no separate database service), drills **every** target that has
+daily backups in the bucket (new databases are covered automatically), reports the heartbeat and
+removes the scratch server. It reads R2 with the **read-only** mirror token (`MIRROR_R2_*`), so it
+cannot change or delete backups. `AGE_IDENTITY` is a service variable: anyone who can read variables
+in `ops-backups` can already read every live database through `BACKUP_URL_*` (`pg_read_all_data`),
+so the key adds no data they could not see; seal it in the dashboard for defence in depth.
+Run now: set its cron a few minutes ahead and redeploy, then set it back to `0 3 1 * *`.
+A failed target is logged as `FAIL <target>` and the heartbeat alerts at once.
+
+**Manual (ad hoc, or if the automated service is removed):**
+
 
 `scripts/restore-drill.sh` does the whole drill: for each target it takes the newest daily backup
 that has a manifest, restores it into a uniquely named scratch database, recounts every table,
