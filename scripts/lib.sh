@@ -46,6 +46,7 @@ pg_url_with_database() {
 classify_dump_error() {
   local file="$1"
   if [ ! -s "$file" ]; then echo "no error output"
+  elif grep -q '^cross-schema dependency' "$file"; then echo "cross-schema dependency (schema dump cannot restore alone)"
   elif grep -qi 'permission denied' "$file"; then echo "permission denied"
   elif grep -qiE 'password authentication failed|access denied' "$file"; then echo "authentication failed"
   elif grep -qiE 'could not connect|connection refused|timeout|could not translate host|unknown mysql server host' "$file"; then echo "connection failed"
@@ -74,20 +75,47 @@ strip_pg_preamble_setting() {
 # `ALTER TABLE ONLY t ALTER COLUMN c SET (pg_attver=N);`. Vanilla PostgreSQL rejects the
 # parameter, which made the empire database impossible to restore outside Neon (drill
 # 2026-11-18). Remove the entry, and the statement when nothing else is left; other options
-# stay. COPY data blocks (between `COPY ... FROM stdin;` and `\.`) are never touched.
+# stay. Only top-level statements are edited: COPY data blocks (`COPY ... FROM stdin;` to `\.`)
+# and dollar-quoted bodies (`$tag$ ... $tag$`, how pg_dump writes routines) pass unchanged.
+# Identifiers may be double-quoted (spaces, doubled quotes) as pg_dump writes them.
 strip_neon_column_options() {
   awk '
+    BEGIN {
+      id = "(\"([^\"]|\"\")+\"|[^ .\"]+)"
+      stmt = "^ALTER TABLE (ONLY )?" id "(\\." id ")? ALTER COLUMN " id " SET \\([^()]*\\);$"
+    }
     copy { if ($0 == "\\.") copy = 0; print; next }
+    tag != "" {
+      if (index($0, tag)) tag = ""
+      print; next
+    }
     /^COPY .* FROM stdin;$/ { copy = 1; print; next }
-    /^ALTER TABLE (ONLY )?[^ ]+ ALTER COLUMN [^ ]+ SET \(.*\);$/ && /pg_attver=/ {
-      open = index($0, " SET ("); head = substr($0, 1, open + 5)
-      opts = substr($0, open + 6); sub(/\);$/, "", opts)
+    $0 ~ stmt && /pg_attver=/ {
+      match($0, / SET \([^()]*\);$/)
+      head = substr($0, 1, RSTART + 5); opts = substr($0, RSTART + 6); sub(/\);$/, "", opts)
       n = split(opts, parts, /, */); kept = ""
       for (i = 1; i <= n; i++) if (parts[i] !~ /^pg_attver=/) kept = kept (kept == "" ? "" : ", ") parts[i]
       if (kept != "") print head kept ");"
       next
     }
-    { print }' "$1" >"$1.tmp" && mv "$1.tmp" "$1"
+    {
+      # A line that opens a dollar quote without closing it starts a body.
+      line = $0
+      while (match(line, /\$[A-Za-z_]*\$/)) {
+        t = substr(line, RSTART, RLENGTH); rest = substr(line, RSTART + RLENGTH)
+        if (index(rest, t)) { line = substr(rest, index(rest, t) + length(t)) } else { tag = t; break }
+      }
+      print
+    }' "$1" >"$1.tmp" && mv "$1.tmp" "$1"
+}
+
+# A one-schema dump (BACKUP_SCHEMA_<NAME>) restores alone only if nothing in it points outside the
+# schema. Counts foreign keys from the schema to tables in other schemas (e.g. auth.users).
+pg_cross_schema_fk_sql_for() {
+  printf '%s' "SELECT count(*) FROM pg_constraint c
+  JOIN pg_class s ON s.oid = c.conrelid JOIN pg_namespace sn ON sn.oid = s.relnamespace
+  JOIN pg_class r ON r.oid = c.confrelid JOIN pg_namespace rn ON rn.oid = r.relnamespace
+WHERE c.contype = 'f' AND sn.nspname = '$1' AND rn.nspname <> '$1'"
 }
 
 PG_COUNT_SQL="SELECT table_schema || '.' || table_name,
@@ -168,6 +196,21 @@ pg_dump_with_manifest() {
     kill "$psql_pid" 2>/dev/null
     stop_coproc "$psql_pid"
     return 1
+  fi
+  if [ -n "$schema" ]; then
+    local external=""
+    if ! printf '%s;\n' "$(pg_cross_schema_fk_sql_for "$schema")" 1>&"$to_psql" 2>/dev/null \
+      || ! IFS= read -r -t 120 external <&"$from_psql" || [[ ! "$external" =~ ^[0-9]+$ ]]; then
+      kill "$psql_pid" 2>/dev/null
+      stop_coproc "$psql_pid"
+      return 1
+    fi
+    if [ "$external" != 0 ]; then
+      echo "cross-schema dependency: $external foreign keys leave schema $schema" >>"$err"
+      kill "$psql_pid" 2>/dev/null
+      stop_coproc "$psql_pid"
+      return 65
+    fi
   fi
   pg_dump --snapshot="$snapshot" --format=custom --compress=6 --no-owner --no-privileges "${only[@]}" \
     --dbname="$url" --file="$out" 2>>"$err" || status=1

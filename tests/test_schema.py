@@ -28,5 +28,17 @@ class CountSqlTests(unittest.TestCase):
         self.assertEqual(sql.count("ORDER BY 1"), 1)
 
 
+class CrossSchemaTests(unittest.TestCase):
+    def test_the_query_counts_foreign_keys_leaving_the_schema(self) -> None:
+        sql = bash('pg_cross_schema_fk_sql_for "$1"', "x_intel").stdout
+        self.assertIn("contype = 'f'", sql)
+        self.assertIn("sn.nspname = 'x_intel'", sql)
+        self.assertIn("rn.nspname <> 'x_intel'", sql)
+
+    def test_the_failure_has_its_own_category(self) -> None:
+        result = bash('f=$(mktemp); echo "cross-schema dependency: 2 foreign keys" >"$f"; classify_dump_error "$f"')
+        self.assertEqual(result.stdout.strip(), "cross-schema dependency (schema dump cannot restore alone)")
+
+
 if __name__ == "__main__":
     unittest.main()
