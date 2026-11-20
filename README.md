@@ -43,6 +43,15 @@ Object names: `<tier>/<target>/<YYYY-MM-DDTHHMM>.<dump|sql.gz>.age`.
 | `ops-backups/db-backup` | the 30 Neon databases of own services | dedicated `db_backup` role per Neon project (Neon roles inherit `pg_read_all_data` via `neon_superuser`) | `db-backup` |
 | `db-backup` inside each Railway project with a database (ev3, a2n, tma, scannpop, teeparinwat) | that project's Postgres / PostGIS / MySQL | reference variable such as `${{Postgres.DATABASE_URL}}` over the private network, so no database is exposed publicly | `db-backup-<project>` |
 
+**teeparinwat builds from the work-org fork** `bookchaowalit-freelance/platform-db-backup`
+(since 2026-11-20). That project sits in the work Railway workspace, where a push from this
+personal repository counts as an external contributor: each deploy waits in `NEEDS_APPROVAL`, and
+the cron is then skipped ("no running container"), which stopped its backups on 2026-11-18 and
+2026-11-19. The fork changes only when the work account syncs it. To ship an update there, run on
+work-dev (logged in as the work account) `gh repo sync bookchaowalit-freelance/platform-db-backup`;
+Railway redeploys on that push. If the deployment still waits for approval, approve the newest
+pending one (GraphQL `deploymentApprove`, Infisical `/railway-work` token).
+
 When a Neon `db_backup` password is reset, update the matching `BACKUP_URL_*` in `ops-backups`.
 The next run fails loudly until you do. Railway references follow rotations automatically.
 

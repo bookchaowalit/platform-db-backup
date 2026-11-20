@@ -9,8 +9,12 @@
 
 ## Trigger a run now
 
-Railway cron services have no "run now" button. Set the cron schedule to a minute a few
-minutes ahead, redeploy, wait for the run, then set it back to `0 19 * * *` and redeploy.
+Run the active deployment once, without touching the schedule (verified 2026-11-20):
+GraphQL `mutation($i:DeploymentInstanceExecutionCreateInput!){deploymentInstanceExecutionCreate(input:$i)}`
+with `{"serviceInstanceId": "<id from service(id){serviceInstances}>"}` and the token of the
+workspace that holds the service. A cron whose newest deployment waits in `NEEDS_APPROVAL` is
+skipped, so approve or fix that first. Fallback: set the cron a few minutes ahead, redeploy, wait
+for the run, then set it back and redeploy.
 
 ## Restore drill (monthly, automated since 2026-11-18; the `restore-drill` heartbeat alerts after 35 days)
 
