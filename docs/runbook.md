@@ -9,14 +9,20 @@
 
 ## Trigger a run now
 
-Run the active deployment once, without touching the schedule (verified 2026-11-20):
-GraphQL `mutation($i:DeploymentInstanceExecutionCreateInput!){deploymentInstanceExecutionCreate(input:$i)}`
-with `{"serviceInstanceId": "<id>"}` and the token of the workspace that holds the service. Take
-the id for the environment you mean (each environment has its own instance):
-`{ serviceInstance(serviceId: "<service id>", environmentId: "<production env id>") { id } }`,
-with the environment id from `project(id){ environments { edges { node { id name } } } }`. A cron whose newest deployment waits in `NEEDS_APPROVAL` is
-skipped, so approve or fix that first. Fallback: set the cron a few minutes ahead, redeploy, wait
-for the run, then set it back and redeploy.
+Run the active deployment once, without touching the schedule (verified 2026-11-20). POST each
+query to `https://backboard.railway.com/graphql/v2` with the token of the workspace that holds the
+service (`Authorization: Bearer ...`). Each environment has its own service instance, so:
+
+1. Environment id:
+   `{"query":"{ project(id: \"<project id>\") { environments { edges { node { id name } } } } }"}`
+2. Instance id for that environment:
+   `{"query":"{ serviceInstance(serviceId: \"<service id>\", environmentId: \"<env id>\") { id } }"}`
+3. Run it:
+   `{"query":"mutation($i: DeploymentInstanceExecutionCreateInput!) { deploymentInstanceExecutionCreate(input: $i) }","variables":{"i":{"serviceInstanceId":"<instance id>"}}}`
+
+A cron whose newest deployment waits in `NEEDS_APPROVAL` is skipped, so approve or fix that first.
+Fallback: set the cron a few minutes ahead, redeploy, wait for the run, then set it back and
+redeploy.
 
 ## Restore drill (monthly, automated since 2026-11-18; the `restore-drill` heartbeat alerts after 35 days)
 
