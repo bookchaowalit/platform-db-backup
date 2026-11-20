@@ -11,8 +11,10 @@
 
 Run the active deployment once, without touching the schedule (verified 2026-11-20):
 GraphQL `mutation($i:DeploymentInstanceExecutionCreateInput!){deploymentInstanceExecutionCreate(input:$i)}`
-with `{"serviceInstanceId": "<id from service(id){serviceInstances}>"}` and the token of the
-workspace that holds the service. A cron whose newest deployment waits in `NEEDS_APPROVAL` is
+with `{"serviceInstanceId": "<id>"}` and the token of the workspace that holds the service. Take
+the id for the environment you mean (each environment has its own instance):
+`{ serviceInstance(serviceId: "<service id>", environmentId: "<production env id>") { id } }`,
+with the environment id from `project(id){ environments { edges { node { id name } } } }`. A cron whose newest deployment waits in `NEEDS_APPROVAL` is
 skipped, so approve or fix that first. Fallback: set the cron a few minutes ahead, redeploy, wait
 for the run, then set it back and redeploy.
 

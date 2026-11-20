@@ -49,8 +49,10 @@ personal repository counts as an external contributor: each deploy waits in `NEE
 the cron is then skipped ("no running container"), which stopped its backups on 2026-11-18 and
 2026-11-19. The fork changes only when the work account syncs it. To ship an update there, run on
 work-dev (logged in as the work account) `gh repo sync bookchaowalit-freelance/platform-db-backup`;
-Railway redeploys on that push. If the deployment still waits for approval, approve the newest
-pending one (GraphQL `deploymentApprove`, Infisical `/railway-work` token).
+Railway redeploys on that push. If the deployment still waits for approval, approve only the
+pending deployment of this service in `production` whose `meta.commitHash` equals the fork's new
+`main` SHA (`gh api repos/bookchaowalit-freelance/platform-db-backup/commits/main --jq .sha`), with
+GraphQL `deploymentApprove` and the Infisical `/railway-work` token.
 
 When a Neon `db_backup` password is reset, update the matching `BACKUP_URL_*` in `ops-backups`.
 The next run fails loudly until you do. Railway references follow rotations automatically.
