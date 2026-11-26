@@ -34,7 +34,7 @@ jobs:
           code_drill=$?
           test "$code_backup" -eq 2 && test "$code_drill" -eq 2
   security:
-    uses: bookchaowalit/platform-ci-workflows/.github/workflows/security.yml@c37ef9d113eefb3ed45429717cb7ca201192c3fc # v1.0.1
+    uses: bookchaowalit/platform-ci-workflows/.github/workflows/security.yml@493a7f5c322219e61245cf17f1fa34de2c35a22b # v1.6.6
 
   image:
     # Builds the Dockerfile and scans the image with Trivy (packages inside the image, which the
